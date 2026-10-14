@@ -23,8 +23,8 @@ export default function ExplorePage() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ query }),
       });
-      const body = await response.json();
-      if (!response.ok) throw new Error(body.detail || "The target search did not answer");
+      const body = await response.json().catch(() => null);
+      if (!response.ok || !body) throw new Error(body?.detail || "The analysis API is not reachable.");
       setTargets(body.results);
       setNote(body.note);
     } catch (reason) {

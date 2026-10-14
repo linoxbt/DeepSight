@@ -27,7 +27,7 @@ Open http://127.0.0.1:3000. The home page is a publication. Explorer, NASA TAP, 
 
 ## Deploy
 
-Netlify builds `apps/web`. The astronomy API stays on a Python host. Set `API_PROXY` to that public URL at build time so `/v1` is rewritten to it. Without that variable, the published site has no analysis API. A contract address is recorded only after a StudioNet deploy receipt. This tree does not invent one.
+Netlify builds `apps/web`. The published site is https://deepsight-evidence.netlify.app. The astronomy API stays on a Python host. Set `API_PROXY` to that public URL at build time so `/v1` is rewritten to it. Without that variable, the published site has no analysis API. A contract address is recorded only after a StudioNet deploy receipt. This tree does not invent one.
 
 ## Tests
 

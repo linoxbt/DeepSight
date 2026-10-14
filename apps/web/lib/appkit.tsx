@@ -32,8 +32,8 @@ function build() {
       metadata: {
         name: "DeepSight",
         description: "Evidence manifests for astronomy. Protocol review is not a scientific confirmation.",
-        url: "https://deepsight.netlify.app",
-        icons: ["https://deepsight.netlify.app/icon.svg"],
+        url: "https://deepsight-evidence.netlify.app",
+        icons: ["https://deepsight-evidence.netlify.app/icon.svg"],
       },
       themeMode: "dark",
       themeVariables: {

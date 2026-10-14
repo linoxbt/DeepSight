@@ -48,9 +48,9 @@ export default function RadioPage() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ target }),
       });
-      const body = await response.json();
-      if (!response.ok) {
-        setError(body.detail || "Catalog search failed");
+      const body = await response.json().catch(() => null);
+      if (!response.ok || !body) {
+        setError(body?.detail || "The analysis API is not reachable.");
         return;
       }
       setRows(body.observations);
@@ -68,9 +68,9 @@ export default function RadioPage() {
     setClaimId("");
     try {
       const response = await fetch("/v1/radio/analyze", { method: "POST" });
-      const body = await response.json();
-      if (!response.ok) {
-        setError(body.detail || "The calibration product could not be screened");
+      const body = await response.json().catch(() => null);
+      if (!response.ok || !body) {
+        setError(body?.detail || "The analysis API is not reachable.");
         return;
       }
       setAnalysis(body);
@@ -91,7 +91,11 @@ export default function RadioPage() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ analysis_id: analysis.id, acknowledged }),
       });
-      const body = await response.json();
+      const body = await response.json().catch(() => null);
+      if (!body) {
+        setError("The analysis API is not reachable.");
+        return;
+      }
       if (!response.ok) {
         const detail = typeof body.detail === "string" ? body.detail : "The claim was not stored";
         const existing = detail.match(/already claimed as (clm_[a-f0-9]+)/);

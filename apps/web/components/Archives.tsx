@@ -30,8 +30,8 @@ export function Archives({ view }: { view: "tap" | "gaia" | "horizons" }) {
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
       });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.detail || "The archive did not answer");
+      const payload = await response.json().catch(() => null);
+      if (!response.ok || !payload) throw new Error(payload?.detail || "The analysis API is not reachable.");
       return payload;
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "The archive did not answer");
