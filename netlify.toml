@@ -1,0 +1,22 @@
+# The site is the Next.js app. The astronomy pipeline stays in the Python API.
+# Set API_PROXY at build time when that API has a public URL.
+
+[build]
+  base = "apps/web"
+  command = "npm run build"
+
+[build.environment]
+  NODE_VERSION = "22"
+  NPM_FLAGS = "--no-audit --no-fund"
+  NEXT_PUBLIC_REOWN_PROJECT_ID = "f0d6f8162be1beccf221b4e2f8bd7026"
+
+[[plugins]]
+  package = "@netlify/plugin-nextjs"
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    Permissions-Policy = "geolocation=(), camera=(), microphone=(), payment=()"
+    Content-Security-Policy = "frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'"

@@ -1,0 +1,936 @@
+"""DeepSight local research API.
+
+Astronomy stays here. GenLayer, when a contract is later configured, only
+receives the manifest hash and the policy outcome.
+"""
+
+from __future__ import annotations
+
+import json
+import subprocess
+import uuid
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
+from typing import Any
+
+import numpy as np
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
+from sqlalchemy import select
+
+from api.archives import ArchiveError, query_gaia, query_horizons, resolve_cross_match
+from api.catalogue import CATALOGUE_VERSION, REFERENCE_CATALOGUE
+from api import chain
+from api.db import AnalysisRow, ClaimEventRow, ClaimRow, DatasetRow, RadioAnalysisRow, SessionLocal, init_db
+from api.manifest import build_manifest, canonicalize, sha256_text
+from api.mast import MastError, fetch_tess_light_curve, normalize_tic
+from api.policy import POLICY_CELESTIAL, RESULT_REVIEW, evaluate
+from api.radio import analyze_tutorial, build_radio_manifest, search_catalog
+from api.science import PIPELINE_NAME, PIPELINE_VERSION, fit_transit, fold, quality_flags, synthetic_series
+from api.targets import TARGETS, get_target
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    init_db()
+    yield
+
+
+app = FastAPI(title="DeepSight", version="0.1.0", lifespan=_lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+class SearchIn(BaseModel):
+    query: str = ""
+
+
+class AnalysisIn(BaseModel):
+    target_id: str = Field(min_length=1, max_length=80)
+
+
+class ImportIn(BaseModel):
+    tic: str = Field(min_length=1, max_length=20)
+
+
+class ClaimIn(BaseModel):
+    analysis_id: str
+    acknowledged: bool = False
+
+
+class TapIn(BaseModel):
+    tic: str = ""
+    hostname: str = ""
+    ra_deg: float | None = None
+    dec_deg: float | None = None
+
+
+class GaiaIn(BaseModel):
+    ra_deg: float
+    dec_deg: float
+    radius_arcsec: float = 36
+
+
+class HorizonsIn(BaseModel):
+    command: str = Field(min_length=1, max_length=48)
+
+
+class RadioSearchIn(BaseModel):
+    target: str = Field(min_length=1, max_length=40)
+
+
+class ChallengeIn(BaseModel):
+    reason: str = Field(min_length=20, max_length=400)
+
+
+class ReviewNoteIn(BaseModel):
+    note: str = Field(min_length=8, max_length=500)
+
+
+class AppealIn(BaseModel):
+    tx_hash: str = Field(min_length=4, max_length=80)
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def _git_commit() -> str:
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=__file__ and str(__import__("pathlib").Path(__file__).resolve().parent.parent),
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip() or "unversioned"
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return "unversioned"
+
+
+def _public_target(target: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": target["id"],
+        "name": target["name"],
+        "synthetic": bool(target["synthetic"]),
+        "archive": target["archive"],
+        "observation_id": target["observation_id"],
+        "ra_deg": target["ra_deg"],
+        "dec_deg": target["dec_deg"],
+        "summary": target["summary"],
+        "tic": target.get("tic"),
+        "sector": target.get("sector"),
+    }
+
+
+def _dataset_targets(session) -> list[dict[str, Any]]:
+    rows = session.scalars(select(DatasetRow).order_by(DatasetRow.created_at.desc())).all()
+    return [json.loads(row.payload_json) for row in rows]
+
+
+def _bin_series(time: np.ndarray, flux: np.ndarray, bins: int = 280) -> tuple[list[float], list[float]]:
+    edges = np.linspace(float(time[0]), float(time[-1]) + 1e-9, bins + 1)
+    centers: list[float] = []
+    values: list[float] = []
+    for start, stop in zip(edges[:-1], edges[1:]):
+        selected = flux[(time >= start) & (time < stop)]
+        if selected.size == 0:
+            continue
+        centers.append(round(float((start + stop) / 2.0), 5))
+        values.append(round(float(np.mean(selected)), 6))
+    return centers, values
+
+
+def _analysis_or_404(session, analysis_id: str) -> AnalysisRow:
+    row = session.get(AnalysisRow, analysis_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Analysis not found")
+    return row
+
+
+def _claim_or_404(session, claim_id: str) -> ClaimRow:
+    row = session.get(ClaimRow, claim_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Claim not found")
+    return row
+
+
+def _chain_note_default() -> str:
+    if chain.configured():
+        return "This record has not been submitted to GenLayer."
+    return "No GenLayer contract address is configured. This record is a local protocol preview."
+
+
+def _add_event(session, claim_id: str, status: str, note: str) -> None:
+    session.add(ClaimEventRow(claim_id=claim_id, status=status, note=note, observed_at=_now()))
+
+
+def _claim_out(row: ClaimRow) -> dict[str, Any]:
+    manifest = json.loads(row.manifest_json)
+    return {
+        "id": row.id,
+        "analysis_id": row.analysis_id,
+        "manifest_hash": row.manifest_hash,
+        "claim_type": manifest["claim_type"],
+        "policy_version": manifest["policy_version"],
+        "scientific_status": manifest["scientific_status"],
+        "target_id": manifest["target"]["id"],
+        "status": row.status,
+        "protocol_result": row.protocol_result,
+        "rationale": row.rationale,
+        "supersedes": row.supersedes,
+        "superseded_by": row.superseded_by,
+        "challenge_reason_hash": row.challenge_reason_hash or "",
+        "chain_claim_id": row.chain_claim_id or "",
+        "chain_status": row.chain_status or "not_submitted",
+        "chain_tx": row.chain_tx or "",
+        "chain_note": row.chain_note or _chain_note_default(),
+        "scientific_confirmation": False,
+        "created_at": row.created_at,
+        "updated_at": row.updated_at,
+    }
+
+
+init_db()
+
+
+@app.get("/v1/health")
+def health() -> dict[str, Any]:
+    return {
+        "status": "ok",
+        "service": "deepsight",
+        "pipeline": PIPELINE_NAME,
+        "pipeline_version": PIPELINE_VERSION,
+        "live_archive": True,
+        "mast_light_curve_import": True,
+        "exoplanet_tap": True,
+        "gaia": True,
+        "jpl_horizons": True,
+        "breakthrough_listen": True,
+        "radio_pipeline": "radio-mad-v1",
+        "genlayer_configured": chain.configured(),
+        "policy": POLICY_CELESTIAL,
+    }
+
+
+@app.get("/v1/sources")
+def sources() -> dict[str, Any]:
+    return {
+        "live_archive": True,
+        "sources": [
+            {"id": "local-synthetic", "name": "DeepSight synthetic calibration", "connected": True},
+            {"id": "mast", "name": "STScI MAST — one TESS sector light curve", "connected": True},
+            {"id": "exoplanet-archive", "name": "NASA Exoplanet Archive TAP (pscomppars)", "connected": True},
+            {"id": "gaia", "name": "ESA Gaia DR3 TAP", "connected": True},
+            {"id": "jpl", "name": "JPL Horizons", "connected": True},
+            {"id": "breakthrough-listen", "name": "Breakthrough Listen open-data catalog", "connected": True},
+            {"id": "genlayer", "name": "GenLayer StudioNet", "connected": chain.configured()},
+        ],
+    }
+
+
+@app.get("/v1/catalogue")
+def catalogue() -> dict[str, Any]:
+    return {
+        "live_query": False,
+        "catalogue": "NASA Exoplanet Archive",
+        "version": CATALOGUE_VERSION,
+        "note": "This table is the local fallback extract. Live cross-matches use NASA TAP when DEEPSIGHT_LIVE_TAP is left on.",
+        "rows": REFERENCE_CATALOGUE,
+    }
+
+
+@app.get("/v1/targets")
+def targets() -> dict[str, Any]:
+    with SessionLocal() as session:
+        imported = _dataset_targets(session)
+    return {
+        "live_archive": False,
+        "mast_light_curve_import": True,
+        "targets": [_public_target(item) for item in [*imported, *TARGETS]],
+    }
+
+
+@app.post("/v1/datasets/import")
+def import_dataset(body: ImportIn) -> dict[str, Any]:
+    try:
+        tic = normalize_tic(body.tic)
+    except MastError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    dataset_id = f"TIC-{tic}"
+    with SessionLocal() as session:
+        existing = session.get(DatasetRow, dataset_id)
+        if existing is not None:
+            return {"cached": True, "target": json.loads(existing.payload_json)}
+    try:
+        curve = fetch_tess_light_curve(tic, cache_dir=_mast_cache())
+    except MastError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    public = _public_target(curve)
+    public.update(
+        {
+            "btjd_start": curve["btjd_start"],
+            "n_kept": curve["n_kept"],
+            "n_raw": curve["n_raw"],
+            "exposure_seconds": curve.get("exposure_seconds"),
+            "product_filename": curve.get("product_filename"),
+            "data_uri": curve.get("data_uri"),
+        }
+    )
+    record = DatasetRow(
+        id=dataset_id,
+        tic=tic,
+        payload_json=json.dumps(public),
+        series_json=json.dumps({"time_days": curve["time_days"], "flux": curve["flux"]}),
+        created_at=_now(),
+    )
+    with SessionLocal() as session:
+        session.add(record)
+        session.commit()
+    return {"cached": False, "target": public}
+
+
+@app.post("/v1/datasets/search")
+def search_datasets(body: SearchIn) -> dict[str, Any]:
+    query = body.query.strip().lower()
+    with SessionLocal() as session:
+        available = [*_dataset_targets(session), *TARGETS]
+    rows = []
+    for target in available:
+        haystack = " ".join(
+            str(part)
+            for part in (target["id"], target["name"], target["summary"], target.get("tic") or "")
+        ).lower()
+        if query and query not in haystack:
+            continue
+        rows.append(_public_target(target))
+    return {
+        "live_archive": False,
+        "note": "Search covers local calibration targets and light curves already imported from MAST. TAP is not queried.",
+        "results": rows,
+    }
+
+
+def _mast_cache():
+    from api.db import DATA_DIR
+
+    return DATA_DIR / "cache" / "mast"
+
+
+def _load_curve(target_id: str) -> tuple[dict[str, Any], np.ndarray, np.ndarray]:
+    builtin = get_target(target_id)
+    if builtin is not None:
+        time, flux = synthetic_series(
+            period_days=builtin["injected_period_days"],
+            depth=builtin["injected_depth"],
+            duration_days=builtin["injected_duration_days"],
+            seed=builtin["seed"],
+        )
+        return builtin, time, flux
+    with SessionLocal() as session:
+        row = session.get(DatasetRow, target_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="Unknown target")
+        target = json.loads(row.payload_json)
+        series = json.loads(row.series_json)
+    return target, np.asarray(series["time_days"], dtype=float), np.asarray(series["flux"], dtype=float)
+
+
+@app.post("/v1/analyses")
+def create_analysis(body: AnalysisIn) -> dict[str, Any]:
+    target, time, flux = _load_curve(body.target_id)
+    fit = fit_transit(time, flux)
+    match = resolve_cross_match(
+        target["id"],
+        fit.period_days,
+        tic=target.get("tic"),
+        ra=target.get("ra_deg"),
+        dec=target.get("dec_deg"),
+    )
+    flags = quality_flags(fit, synthetic=bool(target["synthetic"]), cross_match_result=match["result"])
+    if not target["synthetic"]:
+        flags.append(
+            {
+                "code": "archive_pdcsap",
+                "severity": "info",
+                "message": "Flux is the archive PDCSAP product with quality flag 0. DeepSight did not re-reduce the pixels.",
+            }
+        )
+    series = {
+        "time_days": [round(float(value), 6) for value in time],
+        "flux": [round(float(value), 7) for value in flux],
+    }
+    series_sha = sha256_text(canonicalize(series))
+    snapshot_rows = match.get("tap_rows") if match.get("live_query") else REFERENCE_CATALOGUE
+    snapshot = sha256_text(
+        canonicalize(
+            {
+                "catalogue_version": match.get("catalogue_version", CATALOGUE_VERSION),
+                "rows": snapshot_rows,
+                "query": {"target_id": target["id"], "period_days": round(fit.period_days, 6)},
+            }
+        )
+    )
+    match = {**match, "query_snapshot_sha256": snapshot}
+    folded = fold(time, flux, fit.period_days, fit.t0_days)
+    plot_time, plot_flux = _bin_series(time, flux)
+    payload = {
+        "target": _public_target(target),
+        "pipeline": {"name": PIPELINE_NAME, "version": PIPELINE_VERSION, "git_commit": _git_commit()},
+        "metrics": {
+            "period_days": round(fit.period_days, 6),
+            "period_uncertainty_days": round(fit.period_uncertainty_days, 6),
+            "t0_days": round(fit.t0_days, 6),
+            "duration_days": round(fit.duration_days, 6),
+            "depth": round(fit.depth, 6),
+            "snr_proxy": round(fit.snr_proxy, 3),
+            "odd_even_delta": round(fit.odd_even_delta, 4),
+            "secondary_depth": round(fit.secondary_depth, 6),
+            "n_in_transit": fit.n_in_transit,
+            "n_samples": int(time.size),
+        },
+        "quality_flags": flags,
+        "false_positive_tests": [
+            {
+                "name": "odd_even",
+                "delta": round(fit.odd_even_delta, 4),
+                "note": "Relative difference between odd and even transit depths.",
+            },
+            {
+                "name": "secondary_eclipse",
+                "depth": round(fit.secondary_depth, 6),
+                "note": "Median dip in a box centered at phase 0.5.",
+            },
+        ],
+        "cross_match": match,
+        "series_plot": {"time_days": plot_time, "flux": plot_flux},
+        "folded": folded,
+        "periodogram": {"period_days": fit.periodogram_period, "power": fit.periodogram_power},
+        "limitations": _limitations(target),
+    }
+    analysis_id = "an_" + uuid.uuid4().hex[:12]
+    record = AnalysisRow(
+        id=analysis_id,
+        target_id=target["id"],
+        payload_json=json.dumps(payload),
+        series_sha256=series_sha,
+        created_at=_now(),
+    )
+    with SessionLocal() as session:
+        session.add(record)
+        session.commit()
+    return {"id": analysis_id, "series_sha256": series_sha, **payload}
+
+
+@app.get("/v1/analyses/{analysis_id}")
+def read_analysis(analysis_id: str) -> dict[str, Any]:
+    with SessionLocal() as session:
+        row = _analysis_or_404(session, analysis_id)
+        payload = json.loads(row.payload_json)
+    return {"id": row.id, "series_sha256": row.series_sha256, "created_at": row.created_at, **payload}
+
+
+@app.post("/v1/evidence/preflight")
+def preflight(body: ClaimIn) -> dict[str, Any]:
+    with SessionLocal() as session:
+        row = _analysis_or_404(session, body.analysis_id)
+        payload = json.loads(row.payload_json)
+        manifest = build_manifest(
+            target=payload["target"],
+            fit=payload["metrics"],
+            series_sha256=row.series_sha256,
+            analysis_id=row.id,
+            cross_match=payload["cross_match"],
+            snapshot_sha256=payload["cross_match"]["query_snapshot_sha256"],
+            git_commit=payload["pipeline"]["git_commit"],
+        )
+    items = _checklist(manifest, payload)
+    blockers = [item for item in items if item["status"] == "fail"]
+    return {
+        "ready": len(blockers) == 0,
+        "items": items,
+        "note": "Passing preflight does not confirm a planet. Synthetic provenance stays in human review.",
+    }
+
+
+@app.post("/v1/claims")
+def create_claim(body: ClaimIn) -> dict[str, Any]:
+    if not body.acknowledged:
+        raise HTTPException(
+            status_code=422,
+            detail="Acknowledge that protocol review is not a scientific confirmation",
+        )
+    with SessionLocal() as session:
+        analysis = _analysis_or_404(session, body.analysis_id)
+        payload = json.loads(analysis.payload_json)
+        target = payload["target"]
+        manifest = build_manifest(
+            target=target,
+            fit=payload["metrics"],
+            series_sha256=analysis.series_sha256,
+            analysis_id=analysis.id,
+            cross_match=payload["cross_match"],
+            snapshot_sha256=payload["cross_match"]["query_snapshot_sha256"],
+            git_commit=payload["pipeline"]["git_commit"],
+        )
+        checklist = _checklist(manifest, payload)
+        if any(item["status"] == "fail" for item in checklist):
+            raise HTTPException(status_code=422, detail="Evidence preflight has blocking items")
+        text = canonicalize(manifest)
+        digest = sha256_text(text)
+        existing = session.scalar(select(ClaimRow).where(ClaimRow.manifest_hash == digest))
+        if existing is not None:
+            raise HTTPException(status_code=409, detail=f"Manifest already claimed as {existing.id}")
+        now = _now()
+        claim = ClaimRow(
+            id="clm_" + uuid.uuid4().hex[:12],
+            analysis_id=analysis.id,
+            manifest_json=text,
+            manifest_hash=digest,
+            status="EVIDENCE_READY",
+            created_at=now,
+            updated_at=now,
+        )
+        session.add(claim)
+        _add_event(session, claim.id, "EVIDENCE_READY", "Canonical manifest stored locally. Not submitted to GenLayer.")
+        session.commit()
+        session.refresh(claim)
+        return {**_claim_out(claim), "manifest": manifest, "checklist": checklist}
+
+
+@app.post("/v1/claims/{claim_id}/review-request")
+def review_claim(claim_id: str) -> dict[str, Any]:
+    with SessionLocal() as session:
+        claim = _claim_or_404(session, claim_id)
+        if claim.status != "EVIDENCE_READY":
+            raise HTTPException(status_code=409, detail=f"Cannot review a claim in status {claim.status}")
+        manifest = json.loads(claim.manifest_json)
+        result, rationale = evaluate(claim.manifest_json, manifest["claim_type"], manifest["policy_version"])
+        claim.protocol_result = result
+        claim.rationale = rationale
+        claim.status = "NEEDS_REVIEW" if result == RESULT_REVIEW else "FINALIZED"
+        claim.updated_at = _now()
+        _add_event(
+            session,
+            claim.id,
+            claim.status,
+            f"Local policy preview returned {result}. This is not a GenLayer transaction.",
+        )
+        session.commit()
+        session.refresh(claim)
+        return _claim_out(claim)
+
+
+@app.post("/v1/claims/{claim_id}/supersede")
+def supersede_claim(claim_id: str) -> dict[str, Any]:
+    with SessionLocal() as session:
+        claim = _claim_or_404(session, claim_id)
+        if claim.status not in ("FINALIZED", "NEEDS_REVIEW", "CHALLENGED"):
+            raise HTTPException(status_code=409, detail=f"Cannot supersede a claim in status {claim.status}")
+        manifest = json.loads(claim.manifest_json)
+        manifest["supersedes"] = claim.manifest_hash
+        text = canonicalize(manifest)
+        digest = sha256_text(text)
+        now = _now()
+        replacement = ClaimRow(
+            id="clm_" + uuid.uuid4().hex[:12],
+            analysis_id=claim.analysis_id,
+            manifest_json=text,
+            manifest_hash=digest,
+            status="EVIDENCE_READY",
+            supersedes=claim.id,
+            created_at=now,
+            updated_at=now,
+        )
+        claim.status = "SUPERSEDED"
+        claim.superseded_by = replacement.id
+        claim.updated_at = now
+        session.add(replacement)
+        _add_event(session, claim.id, "SUPERSEDED", f"Superseded by {replacement.id}")
+        _add_event(session, replacement.id, "EVIDENCE_READY", f"Replacement for {claim.id}. Policy review has not been run.")
+        session.commit()
+        session.refresh(replacement)
+        return _claim_out(replacement)
+
+
+@app.get("/v1/claims")
+def list_claims() -> dict[str, Any]:
+    with SessionLocal() as session:
+        rows = session.scalars(select(ClaimRow).order_by(ClaimRow.created_at.desc())).all()
+        return {"claims": [_claim_out(row) for row in rows]}
+
+
+@app.get("/v1/claims/{claim_id}")
+def read_claim(claim_id: str) -> dict[str, Any]:
+    with SessionLocal() as session:
+        claim = _claim_or_404(session, claim_id)
+        manifest = json.loads(claim.manifest_json)
+        return {**_claim_out(claim), "manifest": manifest}
+
+
+@app.get("/v1/claims/{claim_id}/policy-result")
+def policy_result(claim_id: str) -> dict[str, Any]:
+    with SessionLocal() as session:
+        claim = _claim_or_404(session, claim_id)
+        return {
+            "claim_id": claim.id,
+            "protocol_result": claim.protocol_result or None,
+            "rationale": claim.rationale,
+            "scientific_status": json.loads(claim.manifest_json)["scientific_status"],
+            "scientific_confirmation": False,
+            "on_chain": False,
+        }
+
+
+@app.get("/v1/claims/{claim_id}/timeline")
+def timeline(claim_id: str) -> dict[str, Any]:
+    with SessionLocal() as session:
+        _claim_or_404(session, claim_id)
+        events = session.scalars(
+            select(ClaimEventRow).where(ClaimEventRow.claim_id == claim_id).order_by(ClaimEventRow.id)
+        ).all()
+        return {
+            "claim_id": claim_id,
+            "events": [
+                {"status": event.status, "note": event.note, "observed_at": event.observed_at}
+                for event in events
+            ],
+        }
+
+
+@app.get("/v1/claims/{claim_id}/finality")
+def finality(claim_id: str) -> dict[str, Any]:
+    with SessionLocal() as session:
+        claim = _claim_or_404(session, claim_id)
+        chain_status = claim.chain_status or "not_submitted"
+        return {
+            "claim_id": claim.id,
+            "submitted": chain_status not in ("", "not_submitted"),
+            "finalized_on_chain": chain_status == "FINALIZED",
+            "local_status": claim.status,
+            "chain_status": chain_status,
+            "reason": claim.chain_note or _chain_note_default(),
+        }
+
+
+@app.get("/v1/discoveries")
+def discoveries() -> dict[str, Any]:
+    with SessionLocal() as session:
+        rows = session.scalars(select(ClaimRow).order_by(ClaimRow.created_at.desc())).all()
+        published = []
+        for row in rows:
+            if row.protocol_result != "EVIDENCE_SUFFICIENT" or row.status != "FINALIZED":
+                continue
+            item = _claim_out(row)
+            item["headline"] = (
+                f"Protocol evidence sufficient. Scientific status: {item['scientific_status']}."
+            )
+            published.append(item)
+        return {
+            "note": "A listing here means the local evidence policy was satisfied. It does not mean a planet or signal was confirmed. Chain finality is shown on the claim.",
+            "discoveries": published,
+        }
+
+
+@app.post("/v1/archives/tap")
+def archive_tap(body: TapIn) -> dict[str, Any]:
+    from api.archives import fetch_planets
+
+    try:
+        rows = fetch_planets(
+            tic=body.tic or None,
+            hostname=body.hostname or None,
+            ra_deg=body.ra_deg,
+            dec_deg=body.dec_deg,
+        )
+    except ArchiveError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    return {
+        "live_query": True,
+        "catalogue": "NASA Exoplanet Archive",
+        "table": "pscomppars",
+        "rows": rows,
+        "note": "These are published planet parameters. A row is not a new confirmation.",
+    }
+
+
+@app.post("/v1/archives/gaia")
+def archive_gaia(body: GaiaIn) -> dict[str, Any]:
+    try:
+        return query_gaia(body.ra_deg, body.dec_deg, body.radius_arcsec)
+    except ArchiveError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
+@app.post("/v1/archives/horizons")
+def archive_horizons(body: HorizonsIn) -> dict[str, Any]:
+    try:
+        return query_horizons(body.command)
+    except ArchiveError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
+@app.post("/v1/radio/catalog")
+def radio_catalog(body: RadioSearchIn) -> dict[str, Any]:
+    try:
+        return search_catalog(body.target)
+    except ArchiveError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
+@app.post("/v1/radio/analyze")
+def radio_analyze() -> dict[str, Any]:
+    try:
+        result = analyze_tutorial(_radio_cache())
+    except ArchiveError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    analysis_id = "rad_" + uuid.uuid4().hex[:12]
+    record = RadioAnalysisRow(
+        id=analysis_id,
+        target_name=result["target_name"],
+        payload_json=json.dumps(result),
+        artifact_sha256=result["artifact_sha256"],
+        created_at=_now(),
+    )
+    with SessionLocal() as session:
+        session.add(record)
+        session.commit()
+    return {"id": analysis_id, **result}
+
+
+@app.post("/v1/radio/claims")
+def create_radio_claim(body: ClaimIn) -> dict[str, Any]:
+    if not body.acknowledged:
+        raise HTTPException(
+            status_code=422,
+            detail="Acknowledge that protocol review is not a scientific confirmation",
+        )
+    with SessionLocal() as session:
+        row = session.get(RadioAnalysisRow, body.analysis_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="Radio analysis not found")
+        result = json.loads(row.payload_json)
+        built = build_radio_manifest(result, analysis_id=row.id, git_commit=_git_commit())
+        text = built["text"]
+        digest = built["sha256"]
+        existing = session.scalar(select(ClaimRow).where(ClaimRow.manifest_hash == digest))
+        if existing is not None:
+            raise HTTPException(status_code=409, detail=f"Manifest already claimed as {existing.id}")
+        now = _now()
+        claim = ClaimRow(
+            id="clm_" + uuid.uuid4().hex[:12],
+            analysis_id=row.id,
+            manifest_json=text,
+            manifest_hash=digest,
+            status="EVIDENCE_READY",
+            created_at=now,
+            updated_at=now,
+        )
+        session.add(claim)
+        _add_event(
+            session,
+            claim.id,
+            "EVIDENCE_READY",
+            "Radio manifest stored locally. Off-target comparison is unavailable, so policy review should stay in human review.",
+        )
+        session.commit()
+        session.refresh(claim)
+        return {**_claim_out(claim), "manifest": built["document"]}
+
+
+@app.get("/v1/reviews")
+def review_queue() -> dict[str, Any]:
+    with SessionLocal() as session:
+        rows = session.scalars(select(ClaimRow).order_by(ClaimRow.updated_at.desc())).all()
+        queued = [_claim_out(row) for row in rows if row.status == "NEEDS_REVIEW"]
+    return {
+        "note": "Human review records a note. It does not change scientific status to confirmed.",
+        "claims": queued,
+    }
+
+
+@app.post("/v1/claims/{claim_id}/review-note")
+def review_note(claim_id: str, body: ReviewNoteIn) -> dict[str, Any]:
+    with SessionLocal() as session:
+        claim = _claim_or_404(session, claim_id)
+        if claim.status != "NEEDS_REVIEW":
+            raise HTTPException(status_code=409, detail="A review note is only attached to NEEDS_REVIEW claims")
+        _add_event(session, claim.id, "NEEDS_REVIEW", f"Human note: {body.note.strip()}")
+        claim.updated_at = _now()
+        session.commit()
+        session.refresh(claim)
+        return _claim_out(claim)
+
+
+@app.post("/v1/claims/{claim_id}/challenge")
+def challenge_claim(claim_id: str, body: ChallengeIn) -> dict[str, Any]:
+    reason = body.reason.strip()
+    reason_hash = sha256_text(reason)
+    with SessionLocal() as session:
+        claim = _claim_or_404(session, claim_id)
+        if claim.status not in ("FINALIZED", "NEEDS_REVIEW"):
+            raise HTTPException(status_code=409, detail=f"Cannot challenge a claim in status {claim.status}")
+        chain_note = "Challenge stored locally. No chain claim id is attached."
+        if claim.chain_claim_id:
+            try:
+                submitted = chain.challenge(claim.chain_claim_id, reason_hash)
+            except chain.ChainError as exc:
+                raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+            chain_note = f"StudioNet challenge transaction {submitted.get('hash', '')}. Status {submitted.get('status', '')}."
+            claim.chain_status = str(submitted.get("status") or claim.chain_status)
+            claim.chain_tx = _append_tx(claim.chain_tx, "challenge", str(submitted.get("hash", "")))
+        claim.status = "CHALLENGED"
+        claim.challenge_reason = reason
+        claim.challenge_reason_hash = reason_hash
+        claim.chain_note = chain_note
+        claim.updated_at = _now()
+        _add_event(session, claim.id, "CHALLENGED", f"{chain_note} Reason hash {reason_hash}.")
+        session.commit()
+        session.refresh(claim)
+        return _claim_out(claim)
+
+
+@app.post("/v1/claims/{claim_id}/retract")
+def retract_claim(claim_id: str) -> dict[str, Any]:
+    with SessionLocal() as session:
+        claim = _claim_or_404(session, claim_id)
+        if claim.status in ("RETRACTED", "SUPERSEDED"):
+            raise HTTPException(status_code=409, detail=f"Cannot retract a claim in status {claim.status}")
+        note = "Retracted in the local registry."
+        if claim.chain_claim_id:
+            try:
+                submitted = chain.retract(claim.chain_claim_id)
+            except chain.ChainError as exc:
+                raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+            note = f"StudioNet retract transaction {submitted.get('hash', '')}. Status {submitted.get('status', '')}."
+            claim.chain_status = str(submitted.get("status") or claim.chain_status)
+            claim.chain_tx = _append_tx(claim.chain_tx, "retract", str(submitted.get("hash", "")))
+            claim.chain_note = note
+        claim.status = "RETRACTED"
+        claim.updated_at = _now()
+        _add_event(session, claim.id, "RETRACTED", note)
+        session.commit()
+        session.refresh(claim)
+        return _claim_out(claim)
+
+
+@app.post("/v1/claims/{claim_id}/submit")
+def submit_claim(claim_id: str) -> dict[str, Any]:
+    with SessionLocal() as session:
+        claim = _claim_or_404(session, claim_id)
+        if claim.chain_claim_id:
+            raise HTTPException(status_code=409, detail=f"Already submitted as {claim.chain_claim_id}")
+        manifest = json.loads(claim.manifest_json)
+        try:
+            submitted = chain.submit_manifest(
+                manifest_text=claim.manifest_json,
+                manifest_hash=claim.manifest_hash,
+                claim_type=manifest["claim_type"],
+                policy_version=manifest["policy_version"],
+                source_ref=f"local://claims/{claim.id}",
+                target_id=manifest.get("target", {}).get("id", claim.id),
+            )
+        except chain.ChainError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        claim.chain_claim_id = submitted["chain_claim_id"]
+        claim.chain_status = submitted["chain_status"]
+        claim.chain_tx = submitted["chain_tx"]
+        claim.chain_note = submitted["chain_note"]
+        claim.updated_at = _now()
+        _add_event(session, claim.id, submitted["chain_status"] or "SUBMITTED", submitted["chain_note"])
+        session.commit()
+        session.refresh(claim)
+        return _claim_out(claim)
+
+
+@app.post("/v1/claims/{claim_id}/appeal")
+def appeal_claim(claim_id: str, body: AppealIn) -> dict[str, Any]:
+    with SessionLocal() as session:
+        claim = _claim_or_404(session, claim_id)
+        try:
+            submitted = chain.appeal(body.tx_hash.strip())
+        except chain.ChainError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        note = f"GenLayer appeal submitted for {body.tx_hash}. An appeal reopens validator review. It is not a scientific reversal by itself."
+        claim.chain_tx = _append_tx(claim.chain_tx, "appeal", body.tx_hash.strip())
+        claim.chain_note = note
+        claim.updated_at = _now()
+        _add_event(session, claim.id, "APPEAL", note)
+        session.commit()
+        session.refresh(claim)
+        return {**_claim_out(claim), "appeal": submitted.get("result")}
+
+
+def _radio_cache():
+    from api.db import DATA_DIR
+
+    return DATA_DIR / "cache" / "radio"
+
+
+def _append_tx(current: str, kind: str, tx_hash: str) -> str:
+    try:
+        payload = json.loads(current) if current else {}
+    except json.JSONDecodeError:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    payload[kind] = tx_hash
+    return json.dumps(payload)
+
+
+def _limitations(target: dict[str, Any]) -> list[str]:
+    shared = [
+        "Not a scientific confirmation",
+        "The signal-to-noise figure is a white-noise proxy, not a CDPP",
+    ]
+    if target["synthetic"]:
+        return ["Synthetic calibration series", "Not an archive observation", *shared]
+    return [
+        f"TESS SPOC PDCSAP flux from sector {target.get('sector', '?')}, one sector only",
+        "Quality-flagged cadences were removed",
+        *shared,
+    ]
+
+
+def _checklist(manifest: dict[str, Any], payload: dict[str, Any]) -> list[dict[str, str]]:
+    metrics = {item["name"]: item for item in manifest["metrics"]}
+    archive_name = manifest["archive"]["name"]
+    items = [
+        _item("target", "Target identifier", True, manifest["target"]["id"]),
+        _item("coordinates", "ICRS coordinates", True, f"{manifest['target']['ra_deg']}°, {manifest['target']['dec_deg']}°"),
+        _item("observation", "Observation id", True, manifest["archive"]["observation_ids"][0]),
+        _item("period", "Period with uncertainty", "period" in metrics, "days"),
+        _item("depth", "Transit depth", "depth" in metrics, "relative flux"),
+        _item("snr", "Signal-to-noise proxy", "snr_proxy" in metrics, "white-noise proxy, not CDPP"),
+        _item("artifact", "Light-curve checksum", len(manifest["artifacts"][0]["sha256"]) == 64, manifest["artifacts"][0]["sha256"][:12] + "…"),
+        _item("cross", "Catalogue snapshot", bool(manifest["cross_matches"][0]["query_snapshot_sha256"]), payload["cross_match"]["result"]),
+        _item("false_positives", "Odd-even and secondary tests", True, "documented"),
+        _item("limitations", "Limitations recorded", len(manifest["limitations"]) > 0, "included in the manifest"),
+        _item(
+            "science",
+            "Scientific status does not claim a new confirmation",
+            manifest["scientific_status"] in {"unconfirmed_candidate", "known_object"},
+            manifest["scientific_status"],
+        ),
+        _item(
+            "archive",
+            "Archive is on the celestial allowlist",
+            archive_name in {"MAST", "NASA Exoplanet Archive", "Gaia", "JPL Horizons"},
+            archive_name,
+            warn_on_fail=True,
+        ),
+    ]
+    return items
+
+
+def _item(code: str, label: str, ok: bool, detail: str, warn_on_fail: bool = False) -> dict[str, str]:
+    if ok:
+        status = "pass"
+    elif warn_on_fail:
+        status = "warn"
+    else:
+        status = "fail"
+    return {"id": code, "label": label, "status": status, "detail": detail}
