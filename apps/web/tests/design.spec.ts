@@ -7,13 +7,19 @@ for (const width of [1440, 390]) {
     await page.goto("/");
     await expect(page.getByRole("heading", { name: "Wonder, with evidence." })).toBeVisible();
     await expect(page.getByRole("link", { name: "Enter the workspace" })).toHaveAttribute("href", "/explore");
+    await expect(page.getByRole("button", { name: "Open menu" })).toHaveCount(0);
+    await expect(page.getByRole("img", { name: "NASA Blue Marble view of Earth" })).toBeVisible();
+    await expect(page.getByRole("img", { name: "Hubble view of the Andromeda galaxy" })).toBeVisible();
     await page.evaluate(() => document.fonts.ready);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await page.screenshot({ path: `/tmp/deepsight-home-${width}.png`, fullPage: true });
+    await page.getByRole("link", { name: "Enter the workspace" }).click();
+    await expect(page.getByRole("heading", { name: "Explore the sky" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Load TESS example" })).toBeVisible();
     await page.getByRole("button", { name: "Open menu" }).click();
     await expect(page.getByRole("navigation", { name: "Pages" })).toBeVisible();
-    await page.getByRole("navigation", { name: "Pages" }).getByRole("link", { name: "Explorer", exact: false }).click();
-    await expect(page.getByRole("heading", { name: "Import one TESS sector" })).toBeVisible();
+    await expect(page.getByRole("navigation", { name: "Pages" }).getByRole("link", { name: "Analyze a light curve" })).toBeVisible();
+    await page.getByRole("button", { name: "Close", exact: true }).click();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await page.screenshot({ path: `/tmp/deepsight-explorer-${width}.png`, fullPage: true });
   });
@@ -49,6 +55,23 @@ test("paper is default and theme preference persists", async ({ page }) => {
   await expect(page.getByRole("button", { name: "Paper mode" })).toBeVisible();
   await page.getByRole("button", { name: "Paper mode" }).click();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "paper");
+});
+
+test("image notebook accepts a photo and exports notes locally", async ({ page }) => {
+  await page.route("**/v1/auth/session", route => route.fulfill({ status: 401, json: {} }));
+  await page.goto("/explore");
+  await page.getByRole("textbox", { name: "TIC ID" }).isVisible();
+  await page.getByLabel("Choose a sky image").setInputFiles({
+    name: "moon.png", mimeType: "image/png",
+    buffer: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL/nwAAAABJRU5ErkJggg==", "base64"),
+  });
+  await expect(page.getByText("1 × 1 pixels")).toBeVisible();
+  await page.getByRole("button", { name: "Mark a point on the image" }).click();
+  await expect(page.getByText("1 point marked")).toBeVisible();
+  await page.getByLabel("What caught your eye?").fill("A bright spot");
+  const download = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Download notes" }).click();
+  expect((await download).suggestedFilename()).toBe("deepsight-image-notes.json");
 });
 
 test("registry distinguishes failed requests from empty records", async ({ page }) => {

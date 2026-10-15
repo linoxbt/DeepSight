@@ -13,11 +13,11 @@ test("workspace navigation, sign-in boundary, and queued analysis", async ({ pag
     series_plot: { time_days: [0, 1, 2], flux: [1, 0.99, 1] }, folded: { phase: [0, 0.5, 1], flux: [1, 0.99, 1] }, periodogram: { period_days: [1, 2.5, 4], power: [0, 1, 0] },
   } } }));
   await page.goto("/lab");
-  await expect(page.getByRole("heading", { name: "Transit search" })).toBeVisible();
-  await page.getByRole("button", { name: "Run BLS analysis" }).click();
+  await expect(page.getByRole("heading", { name: "Analyze a star's light" })).toBeVisible();
+  await page.getByRole("button", { name: "Analyze light curve" }).click();
   await expect(page.getByText("Sign in with your wallet to continue", { exact: true })).toBeVisible();
   authenticated = true;
-  await page.getByRole("button", { name: "Run BLS analysis" }).click();
+  await page.getByRole("button", { name: "Analyze light curve" }).click();
   await expect(page.getByText("Period grid resolution", { exact: true })).toBeVisible();
   await expect(page.getByText("0.016 d (not uncertainty)", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Open menu" }).click();

@@ -54,12 +54,13 @@ export default function LabPage() {
     fetch("/v1/targets")
       .then((response) => response.json())
       .then((body) => {
+        if (!Array.isArray(body.targets)) throw new Error("The research service is unavailable.");
         setTargets(body.targets);
         if (requested && body.targets.some((item: Target) => item.id === requested)) {
           setSelected(requested);
         }
       })
-      .catch(() => setError("The analysis API is not reachable."));
+      .catch(() => setError("The research service is temporarily unavailable. You can still explore an image in the Explorer."));
   }, []);
 
   async function run() {
@@ -82,10 +83,11 @@ export default function LabPage() {
       <header className="page-head">
         <div>
           <p className="kicker">Discovery Lab</p>
-          <h1>Transit search</h1>
+          <h1>Analyze a star&apos;s light</h1>
+          <p className="muted">Choose a light curve below, then look for a repeating dip in brightness.</p>
         </div>
         <button className="primary" type="button" onClick={run} disabled={running || targets.length === 0}>
-          {running ? "Running BLS…" : "Run BLS analysis"}
+          {running ? "Analyzing…" : "Analyze light curve"}
         </button>
       </header>
       {error ? <p className="callout fail">{error}</p> : null}
@@ -100,7 +102,7 @@ export default function LabPage() {
       <div className="grid-2">
         <div className="stack">
           <section className="panel">
-            <h2>Target</h2>
+            <h2>Choose a light curve</h2>
             <div className="target-list">
               {targets.map((item) => (
                 <button
@@ -113,15 +115,14 @@ export default function LabPage() {
                     setAnalysis(null);
                   }}
                 >
-                  <strong className="mono">{item.id}</strong>
-                  {item.name}
-                  <span className="muted"> · {item.synthetic ? "synthetic calibration" : `MAST sector ${item.sector ?? ""}`}</span>
+                  <strong>{item.name}</strong>
+                  <span className="muted">{item.synthetic ? "Practice example" : "TESS observation"}</span>
                 </button>
               ))}
             </div>
             {target ? (
               <p className="fine muted">
-                {target.summary} Coordinates {target.ra_deg}°, {target.dec_deg}° ICRS. Observation id {target.observation_id}.
+                {target.summary} <details><summary>Observation details</summary>Coordinates {target.ra_deg}°, {target.dec_deg}° ICRS. Observation ID {target.observation_id}. Target ID {target.id}.</details>
               </p>
             ) : null}
           </section>
@@ -169,7 +170,7 @@ export default function LabPage() {
           ) : (
             <section className="panel empty">
               <h2>No run yet</h2>
-              <p className="muted">Choose a calibration target and run the search. Nothing is loaded from MAST.</p>
+              <p className="muted">Choose a light curve above, then select Analyze light curve.</p>
             </section>
           )}
         </div>

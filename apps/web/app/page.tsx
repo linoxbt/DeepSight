@@ -1,5 +1,6 @@
 import { Shell } from "@/components/Shell";
 import { ObservatoryMark } from "@/components/ObservatoryMark";
+import Image from "next/image";
 
 const steps = [
   ["01", "Observe.", "Bring a TESS light curve into the workspace. Keep the archive and its provenance in view.", "/explore"],
@@ -18,18 +19,10 @@ export default function HomePage() {
         <div className="actions"><a className="primary" href="/explore">Enter the workspace ↗</a><a className="text-link" href="/methodology">How it works →</a></div>
         <p className="micro">OPEN ARCHIVES. TRACEABLE ANALYSIS. HUMAN JUDGMENT.</p>
       </div>
-      <figure className="specimen">
-        <div className="specimen-meta"><span>Field notes / 001</span><span>Photometry</span></div>
-        <h2>A small dip.<br />A question worth asking.</h2>
-        <p className="fine muted">A transit leaves a pattern in a star’s light.</p>
-        <svg viewBox="0 0 500 240" role="img" aria-label="Illustrative light curve with a transit dip. Schematic, not an observation.">
-          {[55,105,155,205].map(y=><line key={y} x1="30" x2="480" y1={y} y2={y} stroke="var(--line)" />)}
-          <path d="M30 73H178C197 73 200 157 221 157H276C297 157 300 73 320 73H480" fill="none" stroke="var(--accent)" strokeWidth="1.5" opacity=".4" />
-          {Array.from({length:85},(_,i)=>{const x=32+i*5.25; const dip=1/(1+Math.exp(-(x-199)/4))-1/(1+Math.exp(-(x-298)/4));return <circle key={i} cx={x} cy={73+dip*84+((i*17)%13)-6} r="2" fill="var(--accent)" />;})}
-          <text x="30" y="233">TIME →</text><text x="30" y="25">RELATIVE FLUX</text>
-          <line x1="249" x2="249" y1="170" y2="196" stroke="var(--gold)" /><text x="262" y="193">A candidate, not a conclusion.</text>
-        </svg>
-        <figcaption><span className="specimen-dot" /> Schematic illustration · not an archive observation</figcaption>
+      <figure className="cosmos-hero">
+        <div className="cosmos-galaxy"><Image src="/images/andromeda-hubble.jpg" alt="Hubble view of the Andromeda galaxy" fill priority sizes="(max-width: 860px) 100vw, 520px" /></div>
+        <div className="cosmos-earth"><Image src="/images/earth-blue-marble.jpg" alt="NASA Blue Marble view of Earth" fill priority sizes="(max-width: 860px) 45vw, 220px" /></div>
+        <figcaption><span>Our home, and the wider universe.</span><span>Imagery: <a href="https://science.nasa.gov/resource/blue-marble-2002/">NASA Earth Observatory</a> · <a href="https://science.nasa.gov/asset/hubble/andromeda-galaxy/">NASA/ESA Hubble</a></span></figcaption>
       </figure>
     </section>
     <div className="archive-strip"><span className="micro">A window into the archives</span><a href="/explore">MAST / TESS</a><a href="/tap">NASA Exoplanet Archive</a><a href="/gaia">Gaia</a><a href="/horizons">JPL Horizons</a></div>

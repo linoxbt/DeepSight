@@ -10,12 +10,11 @@ import { WalletButton } from "@/components/WalletButton";
 export function SiteChrome({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
+  const [ready, setReady] = useState(false);
   const drawerRef = useRef<HTMLElement>(null);
   const toggleRef = useRef<HTMLButtonElement>(null);
 
-  useEffect(() => {
-    setOpen(false);
-  }, [pathname]);
+  useEffect(() => setReady(true), []);
 
   useEffect(() => {
     if (!open) return;
@@ -44,11 +43,12 @@ export function SiteChrome({ children }: { children: React.ReactNode }) {
     <>
       <a className="skip-link" href="#content">Skip to content</a>
       <header className="site-header">
-        <button
+        {pathname !== "/" ? <button
           type="button"
           className="menu-toggle"
           ref={toggleRef}
           aria-label={open ? "Close menu" : "Open menu"}
+          disabled={!ready}
           aria-expanded={open}
           aria-controls="site-sidebar"
           onClick={() => setOpen((value) => !value)}
@@ -56,7 +56,7 @@ export function SiteChrome({ children }: { children: React.ReactNode }) {
           <span />
           <span />
           <span />
-        </button>
+        </button> : null}
         <a className="brand" href="/">
           <ObservatoryMark />
           <strong>DEEPSIGHT</strong>
@@ -76,12 +76,11 @@ export function SiteChrome({ children }: { children: React.ReactNode }) {
       ) : null}
       <aside ref={drawerRef} role="dialog" aria-label="All pages" aria-modal={open ? true : undefined} id="site-sidebar" className={open ? "drawer open" : "drawer"} aria-hidden={!open} inert={!open}>
         <div className="drawer-head">
-          <p className="kicker">The observatory</p>
+          <p className="kicker">Explore DeepSight</p>
           <button type="button" className="ghost" onClick={() => setOpen(false)}>
             Close
           </button>
         </div>
-        <div className="drawer-theme"><ThemeToggle /></div>
         <nav aria-label="Pages">
           {NAV.map((group) => (
             <div key={group.title}>
@@ -93,7 +92,6 @@ export function SiteChrome({ children }: { children: React.ReactNode }) {
                     <li key={link.href}>
                       <a href={link.href} aria-current={current ? "page" : undefined} onClick={() => setOpen(false)}>
                         <strong>{link.label}</strong>
-                        <span>{link.summary}</span>
                       </a>
                     </li>
                   );
@@ -106,11 +104,11 @@ export function SiteChrome({ children }: { children: React.ReactNode }) {
       <main id="content">{children}</main>
       <footer className="site-footer">
         <div className="footer-columns">
-          <div><a className="brand" href="/"><ObservatoryMark /><strong>DEEPSIGHT</strong></a><p>For the questions worth looking closer at.</p><p className="fine">Reproducible astronomy. Evidence on the record.</p></div>
-          <div><p className="kicker">Research</p><a href="/explore">Explore the archives</a><a href="/lab">Discovery Lab</a><a href="/jobs">Research runs</a></div>
-          <div><p className="kicker">Understand</p><a href="/methodology">The methodology</a><a href="/sources">Data sources</a><a href="/reviews">Evidence reviews</a></div>
+          <div><a className="brand" href="/"><ObservatoryMark /><strong>DEEPSIGHT</strong></a><p>Explore the universe. Follow the evidence.</p></div>
+          <div><p className="kicker">Explore</p><a href="/explore">Get started</a><a href="/lab">Analyze</a><a href="/claims">Records</a></div>
+          <div><p className="kicker">About</p><a href="/methodology">How it works</a><a href="/sources">Data sources</a></div>
         </div>
-        <div className="footer-bottom"><p>Evidence review is not scientific confirmation.</p><p className="mono">GenLayer StudioNet · Research workspace</p></div>
+        <div className="footer-bottom"><p>Research workspace · DeepSight</p><p className="mono">GenLayer StudioNet</p></div>
       </footer>
     </>
   );

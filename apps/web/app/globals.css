@@ -395,3 +395,44 @@ th,td { padding:15px 12px; }
 .claim-card dt { color:var(--muted); }
 .claim-card dd { margin:0; text-align:right; }
 @media(max-width:650px) { .claim-board { grid-template-columns:1fr; } .registry-controls input { width:100%; } }
+
+/* A visual welcome and a simpler first step into the research workspace. */
+.cosmos-hero { position:relative; margin:0; min-height:470px; }
+.cosmos-galaxy { position:absolute; inset:0 0 72px 0; overflow:hidden; background:#0b0c12; }
+.cosmos-galaxy img { object-fit:cover; object-position:47% 50%; }
+.cosmos-earth { position:absolute; width:44%; aspect-ratio:1; right:-4%; bottom:28px; border:9px solid var(--bg); border-radius:50%; overflow:hidden; background:#101b2d; box-shadow:0 12px 40px #0006; }
+.cosmos-earth img { object-fit:cover; }
+.cosmos-hero figcaption { position:absolute; left:0; right:0; bottom:0; display:flex; align-items:end; justify-content:space-between; gap:15px; font:9px/1.5 "JetBrains Mono",monospace; color:var(--muted); }
+.cosmos-hero figcaption span:first-child { font-family:"Newsreader Variable",Georgia,serif; font-size:19px; color:var(--text); }
+.cosmos-hero figcaption span:last-child { max-width:56%; text-align:right; }
+.start-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:16px; }
+.start-card { display:flex; flex-direction:column; align-items:start; min-height:255px; }
+.start-card h2 { margin:20px 0 6px; }
+.start-card p { color:var(--muted); margin:0 0 24px; line-height:1.6; }
+.start-card .primary { margin-top:auto; }
+.image-desk { scroll-margin-top:88px; }
+.desk-heading p:last-child { max-width:55ch; }
+.upload-zone { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:5px; padding:30px; border:1px dashed var(--gold); background:var(--paper-2); text-align:center; cursor:pointer; }
+.upload-zone:hover { border-color:var(--accent); }
+.upload-zone .upload-symbol { font-size:24px; color:var(--gold); }
+.upload-zone strong { font-family:"Newsreader Variable",Georgia,serif; font-size:24px; font-weight:500; }
+.upload-zone span:last-of-type { font-size:11px; color:var(--muted); }
+.upload-zone input { width:1px; height:1px; opacity:0; padding:0; position:absolute; }
+.upload-zone:focus-within { outline:2px solid var(--accent); outline-offset:2px; }
+.image-inspection { display:grid; grid-template-columns:minmax(0,1.5fr) minmax(250px,.7fr); gap:24px; margin-top:24px; }
+.image-stage { display:inline-block; position:relative; max-width:100%; padding:0; border:0; background:#0b0c12; cursor:crosshair; }
+.image-stage img { display:block; width:auto; max-width:100%; height:auto; max-height:600px; }
+.image-pin { position:absolute; transform:translate(-50%,-50%); display:grid; place-items:center; width:24px; height:24px; border-radius:50%; border:2px solid #fff; background:var(--accent); color:#fff; font:10px "JetBrains Mono",monospace; pointer-events:none; }
+.image-details { min-width:0; }
+.image-details>strong { overflow-wrap:anywhere; }
+.image-details label { display:block; margin:18px 0 6px; }
+.image-details textarea { width:100%; resize:vertical; }
+.brightness-chart { display:flex; align-items:end; gap:2px; height:64px; padding:3px 0; border-bottom:1px solid var(--line); }
+.brightness-chart span { flex:1; min-width:1px; background:var(--accent); }
+.chart-ends { display:flex; justify-content:space-between; color:var(--muted); font:10px "JetBrains Mono",monospace; }
+.manual-import .actions label { font-weight:600; }
+.manual-import .actions input { min-width:220px; }
+.drawer a { display:block; padding:8px 0; }
+.drawer h2 { margin-top:20px; }
+@media(max-width:860px) { .cosmos-hero { width:min(600px,100%); min-height:480px; } .start-grid { grid-template-columns:1fr; } .start-card { min-height:0; } .image-inspection { grid-template-columns:1fr; } }
+@media(max-width:540px) { .cosmos-hero { min-height:340px; } .cosmos-galaxy { bottom:64px; } .cosmos-earth { border-width:5px; bottom:30px; } .cosmos-hero figcaption span:first-child { font-size:15px; } .cosmos-hero figcaption span:last-child { font-size:7px; } }
