@@ -12,3 +12,6 @@ node_modules/
 .env
 .env.*
 .netlify/
+
+apps/web/test-results/
+apps/web/playwright-report/

@@ -1,37 +1,131 @@
 # DeepSight
 
-Local research workspace for the DeepSight Proof of Discovery specification.
+An astronomy research workspace with authenticated claim ownership, reproducible
+TESS evidence, asynchronous analysis, and signed GenLayer relay operations.
+Evidence sufficiency never means scientific confirmation.
 
-The runnable path generates a calibration light curve, fits a box transit, writes a canonical evidence manifest, and applies the celestial evidence policy. Protocol results are `EVIDENCE_SUFFICIENT`, `EVIDENCE_INSUFFICIENT`, or `NEEDS_HUMAN_REVIEW`. None of those confirm a planet.
+## Run locally
 
-Explorer imports one TESS sector from MAST and can query NASA Exoplanet Archive TAP, Gaia DR3, and JPL Horizons. Radio lists Breakthrough Listen catalog rows and screens one public Voyager 1 calibration spectrum. Claims can be challenged, retracted, or submitted to a configured GenLayer StudioNet contract. The consensus rules live in `contracts/proof_of_discovery.py`. Set `DEEPSIGHT_LIVE_TAP=0` to keep cross-matches on the local extract.
-
-## Run
+Requires Python 3.12 and Node 22. Run each service in its own terminal:
 
 ```bash
 python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-uvicorn api.main:app --port 8000
+.venv/bin/pip install -r requirements.lock
+npm ci --prefix api
+DEEPSIGHT_ORIGIN=http://localhost:3000 .venv/bin/uvicorn api.main:app --port 8000
 ```
 
-In a second shell:
+```bash
+.venv/bin/python -m api.worker
+```
 
 ```bash
 cd apps/web
-npm install
+npm ci
 npm run dev
 ```
 
-Open http://127.0.0.1:3000. The home page is a publication. Explorer, NASA TAP, Gaia, Horizons, the catalogue extract, source status, Discovery Lab, evidence, radio, discoveries, claims, review, and the protocol each have their own page. The menu button opens that list. Connect wallet uses Reown AppKit on GenLayer StudioNet.
+Open http://localhost:3000. Connect a wallet, then **Sign in**. Sign-in verifies a
+single-use message and creates an eight-hour HttpOnly session. It does not send
+transactions. Analysis, imports, and radio screening run through the worker.
+Reading public claims, manifests, and archive tools does not require sign-in.
 
-## Deploy
+The default database is `data/deepsight.db`. For PostgreSQL, set `DATABASE_URL`
+to a `postgresql+psycopg://...` connection string for both API and worker. Existing
+SQLite records are retained; legacy records have no authenticated owner and
+cannot be adopted by arbitrary users. Rerun legacy analyses to create complete
+evidence under your own identity.
 
-Netlify builds `apps/web`. The published site is https://deepsight-evidence.netlify.app. The astronomy API stays on a Python host. Set `API_PROXY` to that public URL at build time so `/v1` is rewritten to it. Without that variable, the published site has no analysis API. A contract address is recorded only after a StudioNet deploy receipt. This tree does not invent one.
+## Architecture
 
-## Tests
+- `api/auth.py`: wallet proofs, expiring sessions, origin checks, reviewer roles.
+- `api/jobs.py`, `api/worker.py`: durable analysis queue, bounded concurrency per
+  researcher, failed-worker detection, and chain reconciliation.
+- `api/evidence.py`: content-addressed exact JSON artifacts stored in the database.
+  Back up the database to retain evidence, sessions, jobs, and signed operations.
+- `api/main.py`: archive routes, research workflows, claim lifecycle, downloads.
+- `api/chain_ops.py`: claim-specific signed intents and durable chain outbox.
+- `api/chain_client.mjs`: pinned Node SDK bridge; broadcasts return immediately.
+- `api/policy.py`, `contracts/proof_of_discovery.py`: mirrored bounded evidence
+  predicates, with parity fixtures. Hashes bind bytes; policy results alone do
+  not independently establish that the source measurements are true.
+- `apps/web`: Next.js interface, session signing, queued runs, separate local and
+  chain decisions, and evidence downloads.
+
+Database-backed jobs avoid an additional queue service. Use PostgreSQL for shared
+multi-process deployments. The legacy synchronous analysis/import endpoints are
+retained for API compatibility and require authentication; the web app uses jobs.
+Raw archive files remain in the cache; canonical processed inputs and catalogue
+snapshots are retained as immutable database artifacts.
+
+## Evidence and reproducibility
+
+Claim detail exposes canonical manifests and complete JSON evidence bundles.
+Each embedded artifact preserves the exact bytes used for its SHA-256 hash.
+Transit bundles include the full processed curve, catalogue query snapshot,
+diagnostics, analysis parameters, package versions, and source checksums/code.
+Period grid resolution is labeled separately from statistical uncertainty.
 
 ```bash
-pytest
+.venv/bin/python scripts/reproduce_bundle.py downloaded-bundle.json
+.venv/bin/python scripts/reproduce_bundle.py downloaded-bundle.json --rerun
+```
+
+The rerun verifies local science code and dependency versions before execution;
+it never executes source downloaded inside a bundle automatically.
+
+## GenLayer relay
+
+Configure the same settings on API and worker:
+
+- `DEEPSIGHT_ORIGIN`: exact browser origin; HTTPS enables secure session cookies.
+- `DEEPSIGHT_CONTRACT_ADDRESS`: actual deployed contract address.
+- `DEEPSIGHT_KEYSTORE`, `DEEPSIGHT_CHAIN_PASSWORD`: encrypted relay account access.
+- `DEEPSIGHT_RELAY_ENABLED=1`: explicitly enable broadcasting.
+- `DEEPSIGHT_REVIEWERS`: comma-separated wallet addresses allowed to add review notes.
+
+The relay is **the on-chain claimant** and pays network fees. Each researcher
+signs a separate operation message binding their identity, origin, contract,
+manifest hash, action, parameters, nonce, and expiry. Both message and signature
+are retained. This is a relay model, not direct wallet transaction submission.
+
+A signed operation enters the outbox. Registration must finalize successfully
+before review is broadcast. `ACCEPTED` remains provisional. A finalized failed
+execution is reported as a failure, not successful finality. Local policy preview
+and chain policy outcomes have separate fields.
+
+On network read failures the worker retries reconciliation. If broadcasting
+fails before returning a hash, the operation is marked `unknown` and blocks
+further mutations: it is never blindly replayed. An operator must inspect the
+network before resolving that uncertainty. The local status remains unchanged
+until a chain mutation is successfully finalized.
+
+No contract deployment or live transaction is performed by installation or tests.
+Use a contract built from this tree; local lint and mock-based integration tests
+are not proof of live network behavior.
+
+## Deployment
+
+`docker-compose.yml` runs PostgreSQL, API, worker, and web. Supply
+`POSTGRES_PASSWORD` in the environment, then run `docker compose up --build`.
+The relay is disabled in this default configuration. API and worker share the
+archive volume. The Python image includes Node and the pinned adapter packages.
+
+For separately hosted web and API services, set `API_PROXY` when building the
+Next.js app and set `DEEPSIGHT_ORIGIN` to the public web origin. Keep the same
+origin proxy for session cookies. Netlify configuration remains available.
+
+## Checks
+
+```bash
+.venv/bin/python -m pytest -q
+cd apps/web && npm run build
+npm run test:browser  # uses local Google Chrome; set CHROME_PATH if needed
+# From repository root, when the GenVM linter is installed:
 genvm-lint check contracts/proof_of_discovery.py
 ```
+
+Tests cover signature replay and ownership, exact evidence retrieval, local/contract
+policy parity, an Astropy reference comparison, job privacy, provisional/finalized
+chain outcomes, and interrupted broadcast handling. They use isolated databases
+and mocked chain calls. CI runs Python tests, the frontend production build, and browser workflow checks.

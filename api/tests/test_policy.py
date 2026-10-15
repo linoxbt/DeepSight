@@ -11,7 +11,7 @@ def _base() -> dict:
         "policy_version": "celestial-v1",
         "target": {"id": "TIC-1", "ra_deg": 10.0, "dec_deg": -20.0},
         "archive": {"name": "MAST", "observation_ids": ["obs-1"]},
-        "analysis": {"git_commit": "abc", "container_digest": "sha256:demo"},
+        "analysis": {"git_commit": "abc", "container_digest": "sha256:" + "d" * 64},
         "metrics": [
             {"name": "period", "value": 2.5, "unit": "d"},
             {"name": "depth", "value": 0.01, "unit": "relative_flux"},
@@ -76,7 +76,7 @@ def test_radio_without_off_target_needs_review():
         "artifacts": [{"sha256": "c" * 64}],
         "rfi_tests": ["off_axis_repeat"],
         "off_target_comparison": "unavailable",
-        "analysis": {"git_commit": "abc", "container_digest": "sha256:demo"},
+        "analysis": {"git_commit": "abc", "container_digest": "sha256:" + "d" * 64},
         "limitations": ["An anomaly is not a technosignature"],
     }
     result, rationale = evaluate(json.dumps(document), "radio_signal_integrity", "signal-v1")

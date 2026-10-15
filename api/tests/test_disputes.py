@@ -33,7 +33,7 @@ def test_challenge_and_retract_stay_local_without_a_contract():
     assert len(challenged.json()["challenge_reason_hash"]) == 64
 
     blocked = client.post("/v1/claims/{}/submit".format(claim_id))
-    assert blocked.status_code == 503
+    assert blocked.status_code == 409  # A challenged claim is ineligible even without a relay.
 
     retracted = client.post(f"/v1/claims/{claim_id}/retract")
     assert retracted.status_code == 200

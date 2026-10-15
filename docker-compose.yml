@@ -1,21 +1,64 @@
+x-backend: &backend
+  build:
+    context: .
+    dockerfile: Dockerfile.api
+  environment: &backend-env
+    DATABASE_URL: postgresql+psycopg://deepsight:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in your environment}@db:5432/deepsight
+    DEEPSIGHT_ORIGIN: ${DEEPSIGHT_ORIGIN:-http://localhost:3000}
+    DEEPSIGHT_REVIEWERS: ${DEEPSIGHT_REVIEWERS:-}
+    DEEPSIGHT_RELAY_ENABLED: "0"
+  volumes:
+    - research-data:/app/data
+  depends_on:
+    db:
+      condition: service_healthy
+  restart: unless-stopped
+
 services:
-  api:
-    image: python:3.12-slim
-    working_dir: /app
+  db:
+    image: postgres:16-bookworm
+    environment:
+      POSTGRES_DB: deepsight
+      POSTGRES_USER: deepsight
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in your environment}
     volumes:
-      - .:/app
-    command: sh -c "pip install -r requirements.txt && uvicorn api.main:app --host 0.0.0.0 --port 8000"
-    ports:
-      - "8000:8000"
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U deepsight"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+  api:
+    <<: *backend
+    ports: ["127.0.0.1:8000:8000"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/v1/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+  worker:
+    <<: *backend
+    command: ["python", "-m", "api.worker"]
+    depends_on:
+      api:
+        condition: service_healthy
   web:
-    image: node:22-slim
+    image: node:22-bookworm-slim
     working_dir: /app/apps/web
     volumes:
       - .:/app
+      - web-dependencies:/app/apps/web/node_modules
+      - web-build:/app/apps/web/.next
     environment:
       API_PROXY: http://api:8000
-    command: sh -c "npm install && npm run dev -- --hostname 0.0.0.0 --port 3000"
-    ports:
-      - "3000:3000"
+    command: sh -c "npm ci --no-audit --no-fund && npm run build && npm run start -- --hostname 0.0.0.0"
+    ports: ["127.0.0.1:3000:3000"]
     depends_on:
-      - api
+      api:
+        condition: service_healthy
+
+volumes:
+  postgres-data:
+  research-data:
+  web-dependencies:
+  web-build:

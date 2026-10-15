@@ -1,4 +1,8 @@
 import type { Metadata } from "next";
+import "@fontsource-variable/newsreader";
+import "@fontsource/inter/400.css";
+import "@fontsource/inter/600.css";
+import "@fontsource/jetbrains-mono/400.css";
 import "./globals.css";
 import { Providers } from "@/components/Providers";
 import { SiteChrome } from "@/components/SiteChrome";
@@ -12,14 +16,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en" suppressHydrationWarning>
       <head>
-        <link rel="preconnect" href="https://fonts.googleapis.com" />
-        <link
-          href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Inter:wght@420;520;600&display=swap"
-          rel="stylesheet"
-        />
         <script
           dangerouslySetInnerHTML={{
-            __html: "try{if(localStorage.getItem('deepsight-theme')==='paper')document.documentElement.dataset.theme='paper'}catch(e){}",
+            __html: "try{if(localStorage.getItem('deepsight-theme')==='observation')document.documentElement.dataset.theme='observation'}catch(e){}",
           }}
         />
       </head>

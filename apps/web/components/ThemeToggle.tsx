@@ -3,18 +3,18 @@
 import { useEffect, useState } from "react";
 
 export function ThemeToggle() {
-  const [paper, setPaper] = useState(false);
+  const [paper, setPaper] = useState(true);
 
   useEffect(() => {
-    setPaper(document.documentElement.dataset.theme === "paper");
+    setPaper(document.documentElement.dataset.theme !== "observation");
   }, []);
 
   function toggle() {
     const next = !paper;
     setPaper(next);
     if (next) document.documentElement.dataset.theme = "paper";
-    else delete document.documentElement.dataset.theme;
-    localStorage.setItem("deepsight-theme", next ? "paper" : "observation");
+    else document.documentElement.dataset.theme = "observation";
+    try { localStorage.setItem("deepsight-theme", next ? "paper" : "observation"); } catch {}
   }
 
   return (

@@ -23,6 +23,7 @@ export const NAV: NavGroup[] = [
   {
     title: "Analyze",
     links: [
+      { href: "/jobs", label: "Research runs", summary: "Queued work, progress, and completed analyses." },
       { href: "/lab", label: "Discovery Lab", summary: "Box-least-squares on one light curve." },
       { href: "/evidence", label: "Evidence", summary: "The manifest, the hash, and the checklist." },
       { href: "/radio", label: "Radio", summary: "Breakthrough Listen rows and the Voyager calibration screen." },

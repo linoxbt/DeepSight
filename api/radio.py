@@ -120,7 +120,7 @@ def analyze_tutorial(cache_dir: Path) -> dict[str, Any]:
     path, digest = ensure_tutorial(cache_dir)
     loaded = read_h5(path)
     screen = screen_spectrum(loaded["frequency_mhz"], loaded["power"], loaded.get("peak_time_fraction"))
-    return public_radio_result(
+    result = public_radio_result(
         observation_id=path.stem,
         source_name=loaded["source_name"],
         frequency_range=loaded["frequency_range"],
@@ -130,6 +130,15 @@ def analyze_tutorial(cache_dir: Path) -> dict[str, Any]:
         data_uri=TUTORIAL_URL,
         product_filename=path.name,
     )
+
+    from api.evidence import put_json
+    finite = np.isfinite(loaded["frequency_mhz"]) & np.isfinite(loaded["power"])
+    result["spectrum_sha256"] = put_json({
+        "frequency_mhz": loaded["frequency_mhz"][finite].tolist(),
+        "power": loaded["power"][finite].tolist(),
+        "peak_time_fraction": loaded["peak_time_fraction"],
+    })
+    return result
 
 
 def ensure_tutorial(cache_dir: Path) -> tuple[Path, str]:
@@ -308,7 +317,7 @@ def build_radio_manifest(result: dict[str, Any], *, analysis_id: str, git_commit
         "claim_type": "radio_signal_integrity",
         "policy_version": "signal-v1",
         "target": {"id": result["target_name"]},
-        "archive": {"name": ARCHIVE_NAME, "observation_ids": [result["observation_id"]]},
+        "archive": {"name": ARCHIVE_NAME, "observation_ids": [result["observation_id"]], "raw_source_uri": result["data_uri"], "raw_source_sha256": result["artifact_sha256"]},
         "signal": {
             "observation_id": result["observation_id"],
             "frequency_range": result["frequency_range"],
@@ -318,7 +327,8 @@ def build_radio_manifest(result: dict[str, Any], *, analysis_id: str, git_commit
         },
         "analysis": {
             "git_commit": git_commit,
-            "container_digest": "local-dev",
+            "container_digest": "",
+            "environment_sha256": result.get("environment_sha256", ""),
             "pipeline": "radio-mad-v1",
             "pipeline_version": "1",
         },
@@ -327,9 +337,9 @@ def build_radio_manifest(result: dict[str, Any], *, analysis_id: str, git_commit
         ],
         "artifacts": [
             {
-                "sha256": result["artifact_sha256"],
-                "uri": result["data_uri"],
-                "kind": "spectrum",
+                "sha256": result.get("report_sha256") or result["artifact_sha256"],
+                "uri": f"/v1/artifacts/{result['report_sha256']}" if result.get("report_sha256") else result["data_uri"],
+                "kind": "screening_report",
             }
         ],
         "rfi_tests": result["rfi_tests"],
@@ -337,6 +347,8 @@ def build_radio_manifest(result: dict[str, Any], *, analysis_id: str, git_commit
         "limitations": result["limitations"],
         "scientific_status": result["scientific_status"],
     }
+    if result.get("spectrum_sha256"):
+        document["artifacts"].append({"sha256": result["spectrum_sha256"], "uri": f"/v1/artifacts/{result['spectrum_sha256']}", "kind": "spectrum"})
     text = canonicalize(document)
     return {"document": document, "text": text, "sha256": sha256_text(text), "analysis_id": analysis_id}
 

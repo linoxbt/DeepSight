@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { api, runJob } from "@/lib/api";
 import { Shell } from "@/components/Shell";
 
 type Observation = {
@@ -38,6 +39,11 @@ export default function RadioPage() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState("");
 
+  useEffect(() => {
+    const saved = new URLSearchParams(window.location.search).get("analysis");
+    if (saved) api(`/v1/radio/analyses/${encodeURIComponent(saved)}`).then(setAnalysis).catch(reason => setError(reason.message));
+  }, []);
+
   async function search(event: React.FormEvent) {
     event.preventDefault();
     setBusy("search");
@@ -67,12 +73,7 @@ export default function RadioPage() {
     setError("");
     setClaimId("");
     try {
-      const response = await fetch("/v1/radio/analyze", { method: "POST" });
-      const body = await response.json().catch(() => null);
-      if (!response.ok || !body) {
-        setError(body?.detail || "The analysis API is not reachable.");
-        return;
-      }
+      const body = await runJob("radio");
       setAnalysis(body);
     } catch {
       setError("The analysis API is not reachable.");

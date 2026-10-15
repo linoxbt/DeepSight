@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { api, runJob, waitForJob } from "@/lib/api";
 import { Plot } from "@/components/Plot";
 import { Shell } from "@/components/Shell";
 
@@ -20,7 +21,8 @@ type Analysis = {
   target: Target;
   metrics: {
     period_days: number;
-    period_uncertainty_days: number;
+    period_uncertainty_days: number | null;
+    period_resolution_days: number;
     duration_days: number;
     depth: number;
     snr_proxy: number;
@@ -45,7 +47,10 @@ export default function LabPage() {
   const [running, setRunning] = useState(false);
 
   useEffect(() => {
-    const requested = new URLSearchParams(window.location.search).get("target");
+    const query = new URLSearchParams(window.location.search);
+    const requested = query.get("target");
+    const saved = query.get("analysis");
+    if (saved) api(`/v1/analyses/${encodeURIComponent(saved)}`).then(setAnalysis).catch(reason => setError(reason.message));
     fetch("/v1/targets")
       .then((response) => response.json())
       .then((body) => {
@@ -62,15 +67,9 @@ export default function LabPage() {
     setError("");
     setAnalysis(null);
     try {
-      const response = await fetch("/v1/analyses", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ target_id: selected }),
-      });
-      if (!response.ok) throw new Error(await response.text());
-      setAnalysis(await response.json());
-    } catch {
-      setError("The transit search failed.");
+      setAnalysis(await runJob("analysis", { target_id: selected }));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "The transit search failed.");
     } finally {
       setRunning(false);
     }
@@ -90,6 +89,14 @@ export default function LabPage() {
         </button>
       </header>
       {error ? <p className="callout fail">{error}</p> : null}
+      <button className="ghost" disabled={running} onClick={async () => {
+        const id = sessionStorage.getItem("deepsight-job");
+        if (!id) { setError("No unfinished job in this browser."); return; }
+        setRunning(true);
+        try { const result = await waitForJob(id); if (result.metrics && result.target) setAnalysis(result); else setError("Job completed. Open its target from Explorer."); }
+        catch (reason) { setError(reason instanceof Error ? reason.message : "Could not resume job"); }
+        finally { setRunning(false); }
+      }}>Resume unfinished job</button>
       <div className="grid-2">
         <div className="stack">
           <section className="panel">
@@ -172,7 +179,7 @@ export default function LabPage() {
             {analysis ? (
               <div className="metrics">
                 <Metric label="Period" value={`${analysis.metrics.period_days} d`} />
-                <Metric label="Uncertainty" value={`± ${analysis.metrics.period_uncertainty_days} d`} />
+                <Metric label="Period grid resolution" value={`${analysis.metrics.period_resolution_days} d (not uncertainty)`} />
                 <Metric label="Depth" value={analysis.metrics.depth.toFixed(5)} />
                 <Metric label="Duration" value={`${analysis.metrics.duration_days} d`} />
                 <Metric label="SNR proxy" value={String(analysis.metrics.snr_proxy)} />

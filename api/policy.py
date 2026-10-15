@@ -84,8 +84,8 @@ def _review_celestial(document: dict[str, Any], blocking: list[str], reasons: li
     target = document.get("target")
     if not isinstance(target, dict) or not str(target.get("id", "")).strip():
         blocking.append("target.id is required")
-    elif not _is_number(target.get("ra_deg")) or not _is_number(target.get("dec_deg")):
-        blocking.append("target coordinates are required")
+    elif not _in_range(target.get("ra_deg"), 0, 360, True) or not _in_range(target.get("dec_deg"), -90, 90):
+        blocking.append("valid ICRS coordinates are required")
 
     archive = document.get("archive") if isinstance(document.get("archive"), dict) else {}
     archive_name = str(archive.get("name", "")).strip()
@@ -145,8 +145,8 @@ def _review_signal(document: dict[str, Any], blocking: list[str], reasons: list[
 
 def _require_analysis(document: dict[str, Any], reasons: list[str]) -> None:
     analysis = document.get("analysis") if isinstance(document.get("analysis"), dict) else {}
-    if not str(analysis.get("git_commit", "")).strip() or not str(analysis.get("container_digest", "")).strip():
-        reasons.append("git commit and container digest are required for reproducibility")
+    if not str(analysis.get("git_commit", "")).strip() or not ((str(analysis.get("container_digest", "")).startswith("sha256:") and _valid_digest(str(analysis.get("container_digest", ""))[7:])) or _valid_digest(analysis.get("environment_sha256", ""))):
+        reasons.append("git commit and environment checksum or container digest are required for reproducibility")
 
 
 def _require_cross_matches(document: dict[str, Any], reasons: list[str]) -> None:
@@ -157,8 +157,8 @@ def _require_cross_matches(document: dict[str, Any], reasons: list[str]) -> None
     first = matches[0]
     if not isinstance(first, dict) or not str(first.get("catalogue", "")).strip():
         reasons.append("cross-match catalogue name is required")
-    elif not str(first.get("query_snapshot_sha256", "")).strip():
-        reasons.append("cross-match query snapshot hash is required")
+    elif not _valid_digest(first.get("query_snapshot_sha256", "")):
+        reasons.append("valid cross-match query snapshot hash is required")
 
 
 def _require_limitations(document: dict[str, Any], reasons: list[str]) -> None:
@@ -177,7 +177,7 @@ def _has_metric(document: dict[str, Any], name: str) -> bool:
     for metric in metrics:
         if not isinstance(metric, dict) or str(metric.get("name", "")).strip() != name:
             continue
-        if str(metric.get("unit", "")).strip() and _is_number(metric.get("value")):
+        if _metric_valid(metric, name):
             return True
     return False
 
@@ -193,20 +193,74 @@ def _has_artifact(document: dict[str, Any]) -> bool:
     return False
 
 
-def _is_number(value: Any) -> bool:
+def _ratio(value):
     if isinstance(value, bool) or value is None:
+        return None
+    text = str(value).strip().lower()
+    if not text or len(text) > 100:
+        return None
+    exponent = 0
+    if "e" in text:
+        parts = text.split("e")
+        if len(parts) != 2:
+            return None
+        exponent_text = parts[1][1:] if parts[1].startswith(("+", "-")) else parts[1]
+        if not exponent_text or any(c not in "0123456789" for c in exponent_text) or len(exponent_text) > 3:
+            return None
+        exponent = int(parts[1])
+        if exponent < -100 or exponent > 100:
+            return None
+        text = parts[0]
+    sign = -1 if text.startswith("-") else 1
+    if text.startswith(("-", "+")):
+        text = text[1:]
+    parts = text.split(".")
+    if len(parts) > 2:
+        return None
+    digits = "".join(parts)
+    if not digits or any(c not in "0123456789" for c in digits):
+        return None
+    scale = len(parts[1]) if len(parts) == 2 else 0
+    numerator = sign * int(digits)
+    denominator = 10 ** scale
+    if exponent >= 0:
+        numerator *= 10 ** exponent
+    else:
+        denominator *= 10 ** (-exponent)
+    return numerator, denominator
+
+
+def _is_number(value) -> bool:
+    return _ratio(value) is not None
+
+
+def _in_range(value, low: int, high: int, exclusive_high: bool = False) -> bool:
+    pair = _ratio(value)
+    if pair is None:
         return False
-    if isinstance(value, (int, float)):
-        return True
-    if isinstance(value, str):
-        try:
-            float(value.strip())
-        except ValueError:
-            return False
-        return value.strip() != ""
-    return False
+    numerator, denominator = pair
+    return numerator >= low * denominator and (numerator < high * denominator if exclusive_high else numerator <= high * denominator)
+
+
+def _valid_digest(value) -> bool:
+    text = str(value)
+    return len(text) == 64 and all(c in "0123456789abcdef" for c in text)
 
 
 def _join(parts: list[str]) -> str:
     text = "; ".join(parts)
     return text if len(text) <= 600 else text[:597] + "..."
+
+
+def _metric_valid(metric: dict, name: str) -> bool:
+    pair = _ratio(metric.get("value"))
+    if pair is None:
+        return False
+    numerator, denominator = pair
+    if name == "period":
+        return numerator > 0 and metric.get("unit") == "d"
+    if name == "depth":
+        return 0 < numerator < denominator and metric.get("unit") == "relative_flux"
+    if name in ("snr", "snr_proxy"):
+        return numerator >= 0 and metric.get("unit") in ("1", "mad")
+    return bool(str(metric.get("unit", "")).strip())

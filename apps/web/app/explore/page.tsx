@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { runJob } from "@/lib/api";
 import { Shell } from "@/components/Shell";
 
 type Target = { id: string; name: string; ra_deg: number; dec_deg: number; summary: string };
@@ -40,13 +41,7 @@ export default function ExplorePage() {
     setError("");
     setImported(null);
     try {
-      const response = await fetch("/v1/datasets/import", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ tic }),
-      });
-      const body = await response.json();
-      if (!response.ok) throw new Error(body.detail || "MAST import failed");
+      const body = await runJob("import", { tic });
       setImported({ id: body.target.id, summary: body.target.summary, cached: body.cached });
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "MAST import failed");

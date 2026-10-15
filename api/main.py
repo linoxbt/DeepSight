@@ -7,6 +7,7 @@ receives the manifest hash and the policy outcome.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import uuid
 from contextlib import asynccontextmanager
@@ -14,14 +15,18 @@ from datetime import datetime, timezone
 from typing import Any
 
 import numpy as np
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm.exc import StaleDataError
+from fastapi.responses import JSONResponse
 
 from api.archives import ArchiveError, query_gaia, query_horizons, resolve_cross_match
 from api.catalogue import CATALOGUE_VERSION, REFERENCE_CATALOGUE
-from api import chain
+from api import chain, evidence
+from api.auth import router as auth_router, current_user, require_owner, require_reviewer, origin
 from api.db import AnalysisRow, ClaimEventRow, ClaimRow, DatasetRow, RadioAnalysisRow, SessionLocal, init_db
 from api.manifest import build_manifest, canonicalize, sha256_text
 from api.mast import MastError, fetch_tess_light_curve, normalize_tic
@@ -39,10 +44,29 @@ async def _lifespan(_app: FastAPI):
 app = FastAPI(title="DeepSight", version="0.1.0", lifespan=_lifespan)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[origin()],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+from api.chain_ops import router as chain_router, idle as require_chain_idle
+app.include_router(chain_router)
+from api.jobs import router as jobs_router
+app.include_router(jobs_router)
+@app.exception_handler(StaleDataError)
+async def stale_claim(_request, _error):
+    return JSONResponse(status_code=409, content={"detail": "Claim changed concurrently. Refresh before retrying."})
+
+
+@app.exception_handler(IntegrityError)
+async def duplicate_record(_request, _error):
+    return JSONResponse(status_code=409, content={"detail": "This record already exists or conflicts with another request."})
+
+
+app.include_router(auth_router)
+app.include_router(evidence.router)
 
 
 class SearchIn(BaseModel):
@@ -173,6 +197,10 @@ def _claim_out(row: ClaimRow) -> dict[str, Any]:
     return {
         "id": row.id,
         "analysis_id": row.analysis_id,
+        "owner": row.owner,
+        "chain_protocol_result": row.chain_protocol_result,
+        "chain_rationale": row.chain_rationale,
+        "chain_execution": row.chain_execution,
         "manifest_hash": row.manifest_hash,
         "claim_type": manifest["claim_type"],
         "policy_version": manifest["policy_version"],
@@ -255,7 +283,7 @@ def targets() -> dict[str, Any]:
 
 
 @app.post("/v1/datasets/import")
-def import_dataset(body: ImportIn) -> dict[str, Any]:
+def import_dataset(body: ImportIn, user: str = Depends(current_user)) -> dict[str, Any]:
     try:
         tic = normalize_tic(body.tic)
     except MastError as exc:
@@ -340,8 +368,11 @@ def _load_curve(target_id: str) -> tuple[dict[str, Any], np.ndarray, np.ndarray]
 
 
 @app.post("/v1/analyses")
-def create_analysis(body: AnalysisIn) -> dict[str, Any]:
+def create_analysis(body: AnalysisIn, user: str = Depends(current_user)) -> dict[str, Any]:
     target, time, flux = _load_curve(body.target_id)
+    series = {"time_days": time.tolist(), "flux": flux.tolist()}
+    series_sha = evidence.put_json(series)
+    environment_sha = evidence.put_json(evidence.environment())
     fit = fit_transit(time, flux)
     match = resolve_cross_match(
         target["id"],
@@ -359,30 +390,24 @@ def create_analysis(body: AnalysisIn) -> dict[str, Any]:
                 "message": "Flux is the archive PDCSAP product with quality flag 0. DeepSight did not re-reduce the pixels.",
             }
         )
-    series = {
-        "time_days": [round(float(value), 6) for value in time],
-        "flux": [round(float(value), 7) for value in flux],
-    }
-    series_sha = sha256_text(canonicalize(series))
     snapshot_rows = match.get("tap_rows") if match.get("live_query") else REFERENCE_CATALOGUE
-    snapshot = sha256_text(
-        canonicalize(
+    snapshot = evidence.put_json(
             {
                 "catalogue_version": match.get("catalogue_version", CATALOGUE_VERSION),
                 "rows": snapshot_rows,
                 "query": {"target_id": target["id"], "period_days": round(fit.period_days, 6)},
             }
-        )
     )
     match = {**match, "query_snapshot_sha256": snapshot}
     folded = fold(time, flux, fit.period_days, fit.t0_days)
     plot_time, plot_flux = _bin_series(time, flux)
     payload = {
         "target": _public_target(target),
-        "pipeline": {"name": PIPELINE_NAME, "version": PIPELINE_VERSION, "git_commit": _git_commit()},
+        "pipeline": {"name": PIPELINE_NAME, "version": PIPELINE_VERSION, "git_commit": _git_commit(), "environment_sha256": environment_sha},
         "metrics": {
             "period_days": round(fit.period_days, 6),
-            "period_uncertainty_days": round(fit.period_uncertainty_days, 6),
+            "period_uncertainty_days": None,
+            "period_resolution_days": round(fit.period_uncertainty_days, 6),
             "t0_days": round(fit.t0_days, 6),
             "duration_days": round(fit.duration_days, 6),
             "depth": round(fit.depth, 6),
@@ -415,6 +440,7 @@ def create_analysis(body: AnalysisIn) -> dict[str, Any]:
     record = AnalysisRow(
         id=analysis_id,
         target_id=target["id"],
+        owner=user,
         payload_json=json.dumps(payload),
         series_sha256=series_sha,
         created_at=_now(),
@@ -446,6 +472,8 @@ def preflight(body: ClaimIn) -> dict[str, Any]:
             cross_match=payload["cross_match"],
             snapshot_sha256=payload["cross_match"]["query_snapshot_sha256"],
             git_commit=payload["pipeline"]["git_commit"],
+            environment_sha256=payload["pipeline"].get("environment_sha256", ""),
+            diagnostics=payload["false_positive_tests"],
         )
     items = _checklist(manifest, payload)
     blockers = [item for item in items if item["status"] == "fail"]
@@ -457,7 +485,7 @@ def preflight(body: ClaimIn) -> dict[str, Any]:
 
 
 @app.post("/v1/claims")
-def create_claim(body: ClaimIn) -> dict[str, Any]:
+def create_claim(body: ClaimIn, user: str = Depends(current_user)) -> dict[str, Any]:
     if not body.acknowledged:
         raise HTTPException(
             status_code=422,
@@ -465,6 +493,7 @@ def create_claim(body: ClaimIn) -> dict[str, Any]:
         )
     with SessionLocal() as session:
         analysis = _analysis_or_404(session, body.analysis_id)
+        require_owner(analysis, user)
         payload = json.loads(analysis.payload_json)
         target = payload["target"]
         manifest = build_manifest(
@@ -475,6 +504,8 @@ def create_claim(body: ClaimIn) -> dict[str, Any]:
             cross_match=payload["cross_match"],
             snapshot_sha256=payload["cross_match"]["query_snapshot_sha256"],
             git_commit=payload["pipeline"]["git_commit"],
+            environment_sha256=payload["pipeline"].get("environment_sha256", ""),
+            diagnostics=payload["false_positive_tests"],
         )
         checklist = _checklist(manifest, payload)
         if any(item["status"] == "fail" for item in checklist):
@@ -489,6 +520,7 @@ def create_claim(body: ClaimIn) -> dict[str, Any]:
             id="clm_" + uuid.uuid4().hex[:12],
             analysis_id=analysis.id,
             manifest_json=text,
+            owner=user,
             manifest_hash=digest,
             status="EVIDENCE_READY",
             created_at=now,
@@ -502,9 +534,13 @@ def create_claim(body: ClaimIn) -> dict[str, Any]:
 
 
 @app.post("/v1/claims/{claim_id}/review-request")
-def review_claim(claim_id: str) -> dict[str, Any]:
+def review_claim(claim_id: str, user: str = Depends(current_user)) -> dict[str, Any]:
     with SessionLocal() as session:
         claim = _claim_or_404(session, claim_id)
+        require_owner(claim, user)
+        require_chain_idle(session, claim_id)
+        if claim.chain_claim_id:
+            raise HTTPException(409, "Use the finalized chain policy result for this claim")
         if claim.status != "EVIDENCE_READY":
             raise HTTPException(status_code=409, detail=f"Cannot review a claim in status {claim.status}")
         manifest = json.loads(claim.manifest_json)
@@ -525,9 +561,13 @@ def review_claim(claim_id: str) -> dict[str, Any]:
 
 
 @app.post("/v1/claims/{claim_id}/supersede")
-def supersede_claim(claim_id: str) -> dict[str, Any]:
+def supersede_claim(claim_id: str, user: str = Depends(current_user)) -> dict[str, Any]:
     with SessionLocal() as session:
         claim = _claim_or_404(session, claim_id)
+        require_owner(claim, user)
+        require_chain_idle(session, claim_id)
+        if claim.chain_claim_id:
+            raise HTTPException(409, "Chain-linked claims require a chain supersession job")
         if claim.status not in ("FINALIZED", "NEEDS_REVIEW", "CHALLENGED"):
             raise HTTPException(status_code=409, detail=f"Cannot supersede a claim in status {claim.status}")
         manifest = json.loads(claim.manifest_json)
@@ -539,6 +579,7 @@ def supersede_claim(claim_id: str) -> dict[str, Any]:
             id="clm_" + uuid.uuid4().hex[:12],
             analysis_id=claim.analysis_id,
             manifest_json=text,
+            owner=user,
             manifest_hash=digest,
             status="EVIDENCE_READY",
             supersedes=claim.id,
@@ -581,7 +622,9 @@ def policy_result(claim_id: str) -> dict[str, Any]:
             "rationale": claim.rationale,
             "scientific_status": json.loads(claim.manifest_json)["scientific_status"],
             "scientific_confirmation": False,
-            "on_chain": False,
+            "on_chain": bool(claim.chain_claim_id),
+            "chain_protocol_result": claim.chain_protocol_result or None,
+            "chain_rationale": claim.chain_rationale,
         }
 
 
@@ -609,7 +652,7 @@ def finality(claim_id: str) -> dict[str, Any]:
         return {
             "claim_id": claim.id,
             "submitted": chain_status not in ("", "not_submitted"),
-            "finalized_on_chain": chain_status == "FINALIZED",
+            "finalized_on_chain": chain_status == "FINALIZED" and claim.chain_execution == "SUCCESS",
             "local_status": claim.status,
             "chain_status": chain_status,
             "reason": claim.chain_note or _chain_note_default(),
@@ -622,7 +665,10 @@ def discoveries() -> dict[str, Any]:
         rows = session.scalars(select(ClaimRow).order_by(ClaimRow.created_at.desc())).all()
         published = []
         for row in rows:
-            if row.protocol_result != "EVIDENCE_SUFFICIENT" or row.status != "FINALIZED":
+            result = row.chain_protocol_result if row.chain_claim_id else row.protocol_result
+            if result != "EVIDENCE_SUFFICIENT" or row.status != "FINALIZED":
+                continue
+            if row.chain_claim_id and (row.chain_status != "FINALIZED" or row.chain_execution != "SUCCESS"):
                 continue
             item = _claim_out(row)
             item["headline"] = (
@@ -630,7 +676,7 @@ def discoveries() -> dict[str, Any]:
             )
             published.append(item)
         return {
-            "note": "A listing here means the local evidence policy was satisfied. It does not mean a planet or signal was confirmed. Chain finality is shown on the claim.",
+            "note": "Listings distinguish local policy previews from finalized chain evidence decisions. Neither confirms a planet or signal.",
             "discoveries": published,
         }
 
@@ -682,15 +728,18 @@ def radio_catalog(body: RadioSearchIn) -> dict[str, Any]:
 
 
 @app.post("/v1/radio/analyze")
-def radio_analyze() -> dict[str, Any]:
+def radio_analyze(user: str = Depends(current_user)) -> dict[str, Any]:
     try:
         result = analyze_tutorial(_radio_cache())
     except ArchiveError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    result["environment_sha256"] = evidence.put_json(evidence.environment())
+    result["report_sha256"] = evidence.put_json(result)
     analysis_id = "rad_" + uuid.uuid4().hex[:12]
     record = RadioAnalysisRow(
         id=analysis_id,
         target_name=result["target_name"],
+        owner=user,
         payload_json=json.dumps(result),
         artifact_sha256=result["artifact_sha256"],
         created_at=_now(),
@@ -701,8 +750,18 @@ def radio_analyze() -> dict[str, Any]:
     return {"id": analysis_id, **result}
 
 
+@app.get("/v1/radio/analyses/{analysis_id}")
+def read_radio_analysis(analysis_id: str, user: str = Depends(current_user)):
+    with SessionLocal() as session:
+        row = session.get(RadioAnalysisRow, analysis_id)
+        if row is None:
+            raise HTTPException(404, "Radio analysis not found")
+        require_owner(row, user)
+        return {"id": row.id, **json.loads(row.payload_json)}
+
+
 @app.post("/v1/radio/claims")
-def create_radio_claim(body: ClaimIn) -> dict[str, Any]:
+def create_radio_claim(body: ClaimIn, user: str = Depends(current_user)) -> dict[str, Any]:
     if not body.acknowledged:
         raise HTTPException(
             status_code=422,
@@ -712,6 +771,7 @@ def create_radio_claim(body: ClaimIn) -> dict[str, Any]:
         row = session.get(RadioAnalysisRow, body.analysis_id)
         if row is None:
             raise HTTPException(status_code=404, detail="Radio analysis not found")
+        require_owner(row, user)
         result = json.loads(row.payload_json)
         built = build_radio_manifest(result, analysis_id=row.id, git_commit=_git_commit())
         text = built["text"]
@@ -724,6 +784,7 @@ def create_radio_claim(body: ClaimIn) -> dict[str, Any]:
             id="clm_" + uuid.uuid4().hex[:12],
             analysis_id=row.id,
             manifest_json=text,
+            owner=user,
             manifest_hash=digest,
             status="EVIDENCE_READY",
             created_at=now,
@@ -753,20 +814,20 @@ def review_queue() -> dict[str, Any]:
 
 
 @app.post("/v1/claims/{claim_id}/review-note")
-def review_note(claim_id: str, body: ReviewNoteIn) -> dict[str, Any]:
+def review_note(claim_id: str, body: ReviewNoteIn, user: str = Depends(current_user)) -> dict[str, Any]:
+    require_reviewer(user)
     with SessionLocal() as session:
         claim = _claim_or_404(session, claim_id)
         if claim.status != "NEEDS_REVIEW":
             raise HTTPException(status_code=409, detail="A review note is only attached to NEEDS_REVIEW claims")
         _add_event(session, claim.id, "NEEDS_REVIEW", f"Human note: {body.note.strip()}")
-        claim.updated_at = _now()
         session.commit()
         session.refresh(claim)
         return _claim_out(claim)
 
 
 @app.post("/v1/claims/{claim_id}/challenge")
-def challenge_claim(claim_id: str, body: ChallengeIn) -> dict[str, Any]:
+def challenge_claim(claim_id: str, body: ChallengeIn, user: str = Depends(current_user)) -> dict[str, Any]:
     reason = body.reason.strip()
     reason_hash = sha256_text(reason)
     with SessionLocal() as session:
@@ -774,14 +835,9 @@ def challenge_claim(claim_id: str, body: ChallengeIn) -> dict[str, Any]:
         if claim.status not in ("FINALIZED", "NEEDS_REVIEW"):
             raise HTTPException(status_code=409, detail=f"Cannot challenge a claim in status {claim.status}")
         chain_note = "Challenge stored locally. No chain claim id is attached."
+        require_chain_idle(session, claim_id)
         if claim.chain_claim_id:
-            try:
-                submitted = chain.challenge(claim.chain_claim_id, reason_hash)
-            except chain.ChainError as exc:
-                raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
-            chain_note = f"StudioNet challenge transaction {submitted.get('hash', '')}. Status {submitted.get('status', '')}."
-            claim.chain_status = str(submitted.get("status") or claim.chain_status)
-            claim.chain_tx = _append_tx(claim.chain_tx, "challenge", str(submitted.get("hash", "")))
+            raise HTTPException(428, "Chain challenges require a signed claim-specific intent")
         claim.status = "CHALLENGED"
         claim.challenge_reason = reason
         claim.challenge_reason_hash = reason_hash
@@ -794,21 +850,16 @@ def challenge_claim(claim_id: str, body: ChallengeIn) -> dict[str, Any]:
 
 
 @app.post("/v1/claims/{claim_id}/retract")
-def retract_claim(claim_id: str) -> dict[str, Any]:
+def retract_claim(claim_id: str, user: str = Depends(current_user)) -> dict[str, Any]:
     with SessionLocal() as session:
         claim = _claim_or_404(session, claim_id)
+        require_owner(claim, user)
         if claim.status in ("RETRACTED", "SUPERSEDED"):
             raise HTTPException(status_code=409, detail=f"Cannot retract a claim in status {claim.status}")
         note = "Retracted in the local registry."
+        require_chain_idle(session, claim_id)
         if claim.chain_claim_id:
-            try:
-                submitted = chain.retract(claim.chain_claim_id)
-            except chain.ChainError as exc:
-                raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
-            note = f"StudioNet retract transaction {submitted.get('hash', '')}. Status {submitted.get('status', '')}."
-            claim.chain_status = str(submitted.get("status") or claim.chain_status)
-            claim.chain_tx = _append_tx(claim.chain_tx, "retract", str(submitted.get("hash", "")))
-            claim.chain_note = note
+            raise HTTPException(428, "Chain retractions require a signed claim-specific intent")
         claim.status = "RETRACTED"
         claim.updated_at = _now()
         _add_event(session, claim.id, "RETRACTED", note)
@@ -818,50 +869,23 @@ def retract_claim(claim_id: str) -> dict[str, Any]:
 
 
 @app.post("/v1/claims/{claim_id}/submit")
-def submit_claim(claim_id: str) -> dict[str, Any]:
+def submit_claim(claim_id: str, user: str = Depends(current_user)) -> dict[str, Any]:
     with SessionLocal() as session:
         claim = _claim_or_404(session, claim_id)
-        if claim.chain_claim_id:
-            raise HTTPException(status_code=409, detail=f"Already submitted as {claim.chain_claim_id}")
-        manifest = json.loads(claim.manifest_json)
-        try:
-            submitted = chain.submit_manifest(
-                manifest_text=claim.manifest_json,
-                manifest_hash=claim.manifest_hash,
-                claim_type=manifest["claim_type"],
-                policy_version=manifest["policy_version"],
-                source_ref=f"local://claims/{claim.id}",
-                target_id=manifest.get("target", {}).get("id", claim.id),
-            )
-        except chain.ChainError as exc:
-            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
-        claim.chain_claim_id = submitted["chain_claim_id"]
-        claim.chain_status = submitted["chain_status"]
-        claim.chain_tx = submitted["chain_tx"]
-        claim.chain_note = submitted["chain_note"]
-        claim.updated_at = _now()
-        _add_event(session, claim.id, submitted["chain_status"] or "SUBMITTED", submitted["chain_note"])
-        session.commit()
-        session.refresh(claim)
-        return _claim_out(claim)
+        require_owner(claim, user)
+        if claim.status not in ("EVIDENCE_READY", "FINALIZED", "NEEDS_REVIEW"):
+            raise HTTPException(409, f"Cannot submit a claim in status {claim.status}")
+    if not chain.configured():
+        raise HTTPException(503, "No GenLayer contract address is configured")
+    raise HTTPException(428, "Sign a claim-specific intent before authorizing a chain operation")
 
 
 @app.post("/v1/claims/{claim_id}/appeal")
-def appeal_claim(claim_id: str, body: AppealIn) -> dict[str, Any]:
+def appeal_claim(claim_id: str, body: AppealIn, user: str = Depends(current_user)):
     with SessionLocal() as session:
         claim = _claim_or_404(session, claim_id)
-        try:
-            submitted = chain.appeal(body.tx_hash.strip())
-        except chain.ChainError as exc:
-            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
-        note = f"GenLayer appeal submitted for {body.tx_hash}. An appeal reopens validator review. It is not a scientific reversal by itself."
-        claim.chain_tx = _append_tx(claim.chain_tx, "appeal", body.tx_hash.strip())
-        claim.chain_note = note
-        claim.updated_at = _now()
-        _add_event(session, claim.id, "APPEAL", note)
-        session.commit()
-        session.refresh(claim)
-        return {**_claim_out(claim), "appeal": submitted.get("result")}
+        require_owner(claim, user)
+    raise HTTPException(428, "Appeals require a signed claim-specific intent")
 
 
 def _radio_cache():
@@ -899,6 +923,7 @@ def _checklist(manifest: dict[str, Any], payload: dict[str, Any]) -> list[dict[s
     metrics = {item["name"]: item for item in manifest["metrics"]}
     archive_name = manifest["archive"]["name"]
     items = [
+        _item("reproducibility", "Reproducible environment", bool(manifest["analysis"].get("environment_sha256")), "Rerun legacy analyses to capture exact inputs and environment"),
         _item("target", "Target identifier", True, manifest["target"]["id"]),
         _item("coordinates", "ICRS coordinates", True, f"{manifest['target']['ra_deg']}°, {manifest['target']['dec_deg']}°"),
         _item("observation", "Observation id", True, manifest["archive"]["observation_ids"][0]),
@@ -934,3 +959,33 @@ def _item(code: str, label: str, ok: bool, detail: str, warn_on_fail: bool = Fal
     else:
         status = "fail"
     return {"id": code, "label": label, "status": status, "detail": detail}
+
+
+@app.get("/v1/claims/{claim_id}/manifest")
+def download_manifest(claim_id: str):
+    with SessionLocal() as session:
+        claim = _claim_or_404(session, claim_id)
+        return Response(claim.manifest_json, media_type="application/json", headers={
+            "ETag": f'"{claim.manifest_hash}"',
+            "Content-Disposition": f'attachment; filename="{claim.id}-manifest.json"',
+        })
+
+
+@app.get("/v1/claims/{claim_id}/bundle")
+def download_bundle(claim_id: str):
+    with SessionLocal() as session:
+        claim = _claim_or_404(session, claim_id)
+        manifest = json.loads(claim.manifest_json)
+        artifacts = {}
+        refs = list(manifest.get("artifacts", [])) + list(manifest.get("cross_matches", []))
+        env_hash = manifest.get("analysis", {}).get("environment_sha256")
+        if env_hash:
+            refs.append({"sha256": env_hash})
+        for ref in refs:
+            digest = ref.get("sha256") or ref.get("query_snapshot_sha256")
+            if digest:
+                artifacts[digest] = evidence.read(digest)
+        bundle = {"manifest": claim.manifest_json, "manifest_sha256": claim.manifest_hash, "artifacts": artifacts}
+        return Response(canonicalize(bundle), media_type="application/json", headers={
+            "Content-Disposition": f'attachment; filename="{claim.id}-bundle.json"',
+        })
