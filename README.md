@@ -101,9 +101,13 @@ further mutations: it is never blindly replayed. An operator must inspect the
 network before resolving that uncertainty. The local status remains unchanged
 until a chain mutation is successfully finalized.
 
-No contract deployment or live transaction is performed by installation or tests.
-Use a contract built from this tree; local lint and mock-based integration tests
-are not proof of live network behavior.
+Installation and tests do not deploy contracts or submit live transactions.
+Local lint and mock-based integration tests are not proof of live network behavior.
+The contract in [`deployments/studionet.json`](deployments/studionet.json) was
+deployed to StudioNet on 2026-10-16. Its deployment transaction finalized with
+successful execution and the code at that address matched this repository.
+This is a development-network deployment; claim lifecycle writes still need
+live end-to-end verification.
 Deploy `ProofOfDiscovery` with the public HTTPS web origin as its constructor
 argument. Validators fetch each published manifest from that fixed origin and
 check its hash, target, and relay claimant before registration. This verifies

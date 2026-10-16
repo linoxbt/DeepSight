@@ -1,6 +1,6 @@
 # DeepSight audit remediation status
 
-Updated 2026-10-16. The project is **not production ready**. The public Netlify site still returns HTTP 500 for `/v1/health`; no public Python API, worker, PostgreSQL service, or deployed GenLayer contract is configured.
+Updated 2026-10-16. The project is **not production ready**. The public Netlify site still returns HTTP 500 for `/v1/health`; no public Python API, worker, or PostgreSQL service is configured. The GenLayer contract has been deployed to StudioNet, with a finalized successful deployment and matching code, but its claim lifecycle has not been exercised live.
 
 ## Verified fixes
 
@@ -28,17 +28,18 @@ Updated 2026-10-16. The project is **not production ready**. The public Netlify 
 | Severity | Finding | Required completion |
 | --- | --- | --- |
 | Critical | The public API returns HTTP 500 because no backend target exists. Railway rejected project creation with a free-plan resource limit. | Provision an isolated public API, worker, PostgreSQL and durable evidence store; configure `API_PROXY` and `DEEPSIGHT_ORIGIN`; run live end-to-end checks. |
-| High | No deployed GenLayer contract or real fee/finality transaction has been tested. | Deploy this version of `ProofOfDiscovery` with the fixed HTTPS evidence origin, configure relay/contract addresses and funds, then test registration, review, supersession, challenge and finality on the intended network. |
+| High | StudioNet contract is deployed, but no real claim lifecycle write has been tested. | Deploy the public evidence API, configure relay credentials and funds, then test registration, review, supersession, challenge and finality against the deployed address. |
 | High | Validators confirm published bytes and field structure, but do not independently verify archive snapshots, measurements or artifact contents. | Add bounded independent source and artifact verification before treating `EVIDENCE_SUFFICIENT` as a robust provenance decision. |
 | High | Evidence artifacts are stored as database text, with no external object storage, retention policy or restore drill. | Provision durable object storage, migrations, backup/restore and lifecycle policies. |
 | High | Reown email/Google and contract-wallet signatures have not been tested against a live API; backend verifies EOA signatures only. | Exercise both login paths and add supported contract-wallet signature verification if Reown issues a smart-account address. |
 | Medium | The image upload is a local visual notebook; it does not ingest science data or persist a collaborative workspace. | Implement authenticated upload/object storage and a clearly scoped image-analysis workflow. |
 | Medium | MCP services, persistent research notebooks and Redis are absent from the revised architecture. | Implement after the core deployed TESS workflow is reliable. |
-| Medium | No live external-archive regression/availability test or source snapshot comparison exists. | Add live smoke checks and independent scientific review. |
+| Medium | Live external-archive queries work, but there is no scheduled availability test or source snapshot comparison. | Add scheduled live smoke checks and independent scientific review. |
 
 ## Local verification
 
-- `uv run pytest -q api/tests`: 62 passed.
+- `uv run pytest -q api/tests`: 63 passed.
+- Live MAST fetched TIC 259377017 sector 30 (16,436 usable cadences); NASA Exoplanet Archive, Gaia DR3, and JPL Horizons queries returned real data.
 - `npm run build --prefix apps/web`: passed.
 - `npm run test:browser --prefix apps/web`: 9 passed with mocked API responses.
 - `genvm-lint check contracts/proof_of_discovery.py`: passed.

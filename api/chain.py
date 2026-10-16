@@ -44,6 +44,11 @@ def load_config() -> dict[str, str] | None:
         address = address or str(stored.get("address", "")).strip()
         account = str(stored.get("account", account))
         keystore = keystore or str(stored.get("keystore", "")).strip()
+    deployment = Path(__file__).resolve().parent.parent / "deployments" / "studionet.json"
+    if not address and deployment.exists() and not ignore_file:
+        recorded = json.loads(deployment.read_text())
+        if recorded.get("network") == "studionet" and recorded.get("finalized_execution") == "SUCCESS":
+            address = str(recorded.get("contract_address", "")).strip()
     password_path = DATA_DIR / "genlayer.password"
     if not password and password_path.exists() and not ignore_file:
         password = password_path.read_text().strip()

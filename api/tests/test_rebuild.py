@@ -56,6 +56,15 @@ def test_wallet_session_requires_signature_and_nonce_is_single_use():
         assert client.get("/v1/auth/session").status_code == 401
 
 
+def test_studionet_deployment_is_discoverable_without_local_chain_file(monkeypatch):
+    from api.chain import load_config
+    monkeypatch.delenv("DEEPSIGHT_IGNORE_CHAIN_FILE", raising=False)
+    monkeypatch.delenv("DEEPSIGHT_CONTRACT_ADDRESS", raising=False)
+    config = load_config()
+    assert config is not None
+    assert config["address"] == "0x6B6dC06981Aa6903434dBab601D8b61c5fD57ff8"
+
+
 def test_wrong_wallet_cannot_use_challenge():
     app.dependency_overrides.clear()
     first, second = Account.create(), Account.create()

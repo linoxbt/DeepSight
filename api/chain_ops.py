@@ -75,7 +75,9 @@ def event(db, claim, status, note):
 
 @router.get("/chain/config")
 def config():
-    return {"configured": chain.configured(), "relay_enabled": os.environ.get("DEEPSIGHT_RELAY_ENABLED") == "1",
+    cfg = chain.load_config()
+    return {"configured": cfg is not None, "contract_address": cfg["address"] if cfg else None,
+            "relay_enabled": os.environ.get("DEEPSIGHT_RELAY_ENABLED") == "1",
             "signing_mode": "signed_intent_relay", "network": "GenLayer StudioNet",
             "note": "Your signature authorizes this exact operation. The server relay pays fees and is the on-chain claimant."}
 
