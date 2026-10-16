@@ -62,7 +62,7 @@ export function SiteChrome({ children }: { children: React.ReactNode }) {
           <strong>DEEPSIGHT</strong>
         </a>
         <nav className="primary-nav" aria-label="Primary">
-          {(pathname === "/" ? [["/explore", "The workspace"], ["/methodology", "The method"], ["/claims", "The registry"]] : [["/explore", "Explore"], ["/lab", "Discovery Lab"], ["/jobs", "Research runs"], ["/claims", "Claims"]]).map(([href, label]) => (
+          {(pathname === "/" ? [["/dashboard", "Public dashboard"], ["/explore", "The workspace"], ["/methodology", "The method"]] : [["/dashboard", "Dashboard"], ["/explore", "Explore"], ["/lab", "Discovery Lab"], ["/claims", "Claims"]]).map(([href, label]) => (
             <a key={href} href={href} aria-current={pathname === href || pathname.startsWith(`${href}/`) ? "page" : undefined}>{label}</a>
           ))}
         </nav>
@@ -105,7 +105,7 @@ export function SiteChrome({ children }: { children: React.ReactNode }) {
       <footer className="site-footer">
         <div className="footer-columns">
           <div><a className="brand" href="/"><ObservatoryMark /><strong>DEEPSIGHT</strong></a><p>Explore the universe. Follow the evidence.</p></div>
-          <div><p className="kicker">Explore</p><a href="/explore">Get started</a><a href="/lab">Analyze</a><a href="/claims">Records</a></div>
+          <div><p className="kicker">Explore</p><a href="/dashboard">Public dashboard</a><a href="/explore">Get started</a><a href="/lab">Analyze</a><a href="/claims">Records</a></div>
           <div><p className="kicker">About</p><a href="/methodology">How it works</a><a href="/sources">Data sources</a></div>
         </div>
         <div className="footer-bottom"><p>Research workspace · DeepSight</p><p className="mono">GenLayer StudioNet</p></div>

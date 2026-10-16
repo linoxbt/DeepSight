@@ -16,6 +16,7 @@ export const NAV: NavGroup[] = [
     { href: "/radio", label: "Radio signals" },
   ] },
   { title: "Records", links: [
+    { href: "/dashboard", label: "Public dashboard" },
     { href: "/claims", label: "Claims" },
     { href: "/discoveries", label: "Discoveries" },
     { href: "/evidence", label: "Evidence" },

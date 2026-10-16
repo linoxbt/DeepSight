@@ -22,6 +22,7 @@ Updated 2026-10-17. **Deployed, but not production ready.** The public Netlify s
 | GenLayer result parser | Handles `FINISHED_WITH_RETURN` and exposes appeal round data; Node test. |
 | Netlify build configuration | `API_PROXY` points to the healthy Railway API; public `/v1/health` returns 200. |
 | Gaia public timeout | The Netlify proxy timed out on a live 36-second Gaia TAP query. The public read-only Gaia form now calls Railway directly; the API CORS preflight permits the Netlify origin. A live Chromium form submission returned one Gaia source. |
+| Public dashboard | The live browser loaded a real TESS claim from the hosted API. The claim projection now maps the manifest's `period` metric to the dashboard's `period_days` field; a regression test covers the mapping. The dashboard labels records as research claims rather than finalized publications. |
 
 ## Open blockers
 

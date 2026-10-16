@@ -396,6 +396,57 @@ th,td { padding:15px 12px; }
 .claim-card dd { margin:0; text-align:right; }
 @media(max-width:650px) { .claim-board { grid-template-columns:1fr; } .registry-controls input { width:100%; } }
 
+.public-board-head { align-items: flex-start; margin: 22px 0 30px; }
+.public-board-head h1 { font-size: clamp(34px, 5vw, 58px); letter-spacing: -.05em; }
+.public-board-head p.muted { max-width: 66ch; line-height: 1.55; }
+.public-board-head .primary { flex: none; margin-top: 10px; }
+.public-board-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--line); border: 1px solid var(--line); margin-bottom: 16px; }
+.public-board-stats>div { background: var(--surface); padding: 24px; display: grid; gap: 12px; }
+.public-board-stats span { color: var(--muted); font-size: 12px; }
+.public-board-stats strong { font: 500 36px/1 "JetBrains Mono", monospace; }
+.public-board-guide { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; padding: 24px 0 30px; border-bottom: 1px solid var(--line); }
+.public-board-guide>div { display: grid; gap: 7px; }
+.public-board-guide b { color: var(--accent); font-size: 13px; }
+.public-board-guide span { color: var(--muted); font-size: 12px; line-height: 1.5; }
+.public-board-controls { padding: 26px 0 22px; border-bottom: 0; }
+.public-board-controls input { min-width: 235px; border: 1px solid var(--line); background: var(--surface); padding: 10px 12px; }
+.public-board-list { display: grid; gap: 12px; margin-top: 15px; }
+.public-board-record { background: var(--surface); border: 1px solid var(--line); padding: 25px 28px; }
+.public-board-record-top, .public-board-record-body, .public-board-record-bottom { display: flex; justify-content: space-between; gap: 20px; }
+.public-board-record-top { color: var(--muted); font: 11px/1.5 "JetBrains Mono", monospace; letter-spacing: .06em; }
+.public-board-record-top span { color: var(--accent); }
+.public-board-record-body { align-items: end; padding: 8px 0 18px; }
+.public-board-record-body h2 { font-size: clamp(23px, 3vw, 34px); margin: 0 0 8px; overflow-wrap: anywhere; }
+.public-board-record-body h2 a { text-decoration: none; }
+.public-board-record-body h2 a:hover, .public-board-record-bottom a:hover { text-decoration: underline; }
+.public-board-record-body p { color: var(--muted); font-size: 11px; margin: 0; overflow-wrap: anywhere; }
+.public-board-record-metric { text-align: right; min-width: 130px; }
+.public-board-record-metric strong { display: block; font: 500 20px "JetBrains Mono", monospace; }
+.public-board-record-metric span { color: var(--muted); font-size: 11px; }
+.public-board-record-status { display: grid; grid-template-columns: repeat(3, 1fr); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); margin: 0; }
+.public-board-record-status div { display: grid; gap: 8px; padding: 16px 14px 16px 0; }
+.public-board-record-status div+div { border-left: 1px solid var(--line); padding-left: 16px; }
+.public-board-record-status dt { color: var(--muted); font-size: 11px; }
+.public-board-record-status dd { margin: 0; font-size: 13px; text-transform: capitalize; overflow-wrap: anywhere; }
+.public-board-record-bottom { align-items: center; padding-top: 17px; color: var(--muted); font-size: 12px; }
+.public-board-record-bottom a { color: var(--accent); font-weight: 650; text-decoration: none; }
+.public-board-more { margin: 20px 0; }
+@media(max-width:700px) {
+  .public-board-head { display: block; }
+  .public-board-head .primary { display: inline-block; }
+  .public-board-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .public-board-stats>div { padding: 17px 12px; }
+  .public-board-stats strong { font-size: 25px; }
+  .public-board-guide { grid-template-columns: 1fr; gap: 14px; }
+  .public-board-record { padding: 18px; }
+  .public-board-record-body { align-items: flex-start; flex-direction: column; }
+  .public-board-record-metric { text-align: left; }
+  .public-board-record-status { grid-template-columns: 1fr; }
+  .public-board-record-status div, .public-board-record-status div+div { border-left: 0; border-bottom: 1px solid var(--line); padding: 11px 0; }
+  .public-board-record-status div:last-child { border-bottom: 0; }
+  .public-board-record-bottom { align-items: flex-start; flex-direction: column; gap: 8px; }
+}
+
 /* A visual welcome and a simpler first step into the research workspace. */
 .cosmos-hero { position:relative; margin:0; min-height:470px; }
 .cosmos-galaxy { position:absolute; inset:0 0 72px 0; overflow:hidden; background:#0b0c12; }

@@ -16,7 +16,7 @@ export default function HomePage() {
         <h1>Wonder,<br /><em>with evidence.</em></h1>
         <p className="lede">The universe gives us signals.<br />Make the case for what they mean.</p>
         <p className="hero-description">Explore astronomical archives, investigate transit candidates, and put reproducible evidence on the record.</p>
-        <div className="actions"><a className="primary" href="/explore">Enter the workspace ↗</a><a className="text-link" href="/methodology">How it works →</a></div>
+        <div className="actions"><a className="primary" href="/dashboard">View public dashboard ↗</a><a className="text-link" href="/explore">Enter the workspace →</a></div>
         <p className="micro">OPEN ARCHIVES. TRACEABLE ANALYSIS. HUMAN JUDGMENT.</p>
       </div>
       <figure className="cosmos-hero">

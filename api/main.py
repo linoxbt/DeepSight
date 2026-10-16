@@ -199,6 +199,13 @@ def _add_event(session, claim_id: str, status: str, note: str) -> None:
 
 def _claim_out(row: ClaimRow) -> dict[str, Any]:
     manifest = json.loads(row.manifest_json)
+    summary_metrics = {
+        "period_days" if item["name"] == "period" else item["name"]: {
+            "value": item["value"], "unit": item.get("unit", "")
+        }
+        for item in manifest.get("metrics", [])
+        if item.get("name") in {"period", "depth", "snr_proxy"}
+    }
     return {
         "id": row.id,
         "analysis_id": row.analysis_id,
@@ -211,6 +218,9 @@ def _claim_out(row: ClaimRow) -> dict[str, Any]:
         "policy_version": manifest["policy_version"],
         "scientific_status": manifest["scientific_status"],
         "target_id": manifest["target"]["id"],
+        "target_name": manifest["target"].get("name", manifest["target"]["id"]),
+        "archive_name": manifest.get("archive", {}).get("name", ""),
+        "summary_metrics": summary_metrics,
         "status": row.status,
         "protocol_result": row.protocol_result,
         "rationale": row.rationale,
