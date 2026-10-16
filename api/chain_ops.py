@@ -125,7 +125,10 @@ def prepare(claim_id: str, body: IntentIn, user: str = Depends(current_user)):
             manifest["supersedes"] = claim.manifest_hash
             payload["replacement"] = canonicalize(manifest)
             payload["replacement_hash"] = sha256_text(payload["replacement"])
-            payload["replacement_id"] = "clm_" + secrets.token_hex(6)
+            pending = db.scalar(select(ClaimRow).where(ClaimRow.manifest_hash == payload["replacement_hash"]))
+            if pending and (pending.supersedes != claim.id or pending.owner != user or pending.status != "PENDING_CHAIN"):
+                raise HTTPException(409, "A different replacement already uses this manifest hash")
+            payload["replacement_id"] = pending.id if pending else "clm_" + secrets.token_hex(6)
         nonce, now = secrets.token_hex(24), int(time.time())
         message = (f"DeepSight chain authorization\nOrigin: {origin()}\nNetwork: GenLayer StudioNet\n"
                    f"Contract: {cfg['address']}\nResearcher: {user}\nClaim: {claim.id}\n"
@@ -166,11 +169,18 @@ def authorize(claim_id: str, body: AuthorizationIn, user: str = Depends(current_
         if consumed.rowcount != 1:
             raise HTTPException(409, "Authorization already used")
         if intent.action == "supersede":
-            now = claim.updated_at
-            db.add(ClaimRow(id=payload["replacement_id"], analysis_id=claim.analysis_id, owner=user,
-                            manifest_json=payload["replacement"], manifest_hash=payload["replacement_hash"],
-                            status="PENDING_CHAIN", chain_status="QUEUED", supersedes=claim.id,
-                            created_at=now, updated_at=now))
+            replacement = db.get(ClaimRow, payload["replacement_id"])
+            if replacement:
+                if (replacement.status != "PENDING_CHAIN" or replacement.owner != user
+                        or replacement.supersedes != claim.id or replacement.manifest_hash != payload["replacement_hash"]):
+                    raise HTTPException(409, "Pending replacement changed; sign a new authorization")
+                replacement.chain_status = "QUEUED"
+            else:
+                now = claim.updated_at
+                db.add(ClaimRow(id=payload["replacement_id"], analysis_id=claim.analysis_id, owner=user,
+                                manifest_json=payload["replacement"], manifest_hash=payload["replacement_hash"],
+                                status="PENDING_CHAIN", chain_status="QUEUED", supersedes=claim.id,
+                                created_at=now, updated_at=now))
         operation = ChainOperation(id="op_"+secrets.token_hex(16), claim_id=claim_id, actor=user,
                                    action=intent.action, stage="register" if intent.action == "submit" else intent.action,
                                    status="queued", payload=intent.payload, authorization=intent.message,

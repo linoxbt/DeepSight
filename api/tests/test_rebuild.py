@@ -12,7 +12,7 @@ from sqlalchemy import select
 
 from api import chain_ops, evidence, jobs
 from api.auth import current_user
-from api.db import ClaimRow, ChainOperation, SessionLocal
+from api.db import ClaimRow, ChainIntent, ChainOperation, SessionLocal
 from api.main import app
 from api.policy import evaluate
 from api.tests.test_policy import _base
@@ -264,6 +264,12 @@ def test_supersede_publishes_replacement_before_broadcast(monkeypatch):
             assert replacement.status == "PENDING_CHAIN"
             assert command["args"][2].endswith(f"/v1/claims/{replacement_id}/manifest")
             assert client.get(f"/v1/claims/{replacement_id}/manifest").status_code == 200
+            operation.status = "failed"
+            db.commit()
+        retry = client.post("/v1/claims/clm_test/intent", json={"action": "supersede"})
+        assert retry.status_code == 200, retry.text
+        with SessionLocal() as db:
+            assert json.loads(db.get(ChainIntent, retry.json()["id"]).payload)["replacement_id"] == replacement_id
 
 
 def test_outbox_retries_stale_contract_view_after_finality(monkeypatch):
