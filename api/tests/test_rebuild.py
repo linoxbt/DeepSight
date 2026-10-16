@@ -1,6 +1,9 @@
 import ast
+import base64
 import hashlib
+import hmac
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -10,7 +13,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from api import chain_ops, evidence, jobs
-from api.auth import current_user
+from api.auth import current_user, shared_session_address
 from api.db import ClaimRow, ChainOperation, SessionLocal
 from api.main import app
 from api.policy import evaluate
@@ -18,6 +21,19 @@ from api.tests.test_policy import _base
 
 OWNER = "0x" + "1" * 40
 OTHER = "0x" + "2" * 40
+
+
+def test_signed_web_session_is_accepted_by_api(monkeypatch):
+    secret = "a" * 64
+    monkeypatch.setenv("DEEPSIGHT_AUTH_SECRET", secret)
+    payload = base64.urlsafe_b64encode(json.dumps({"a": OWNER, "e": int(time.time()) + 60}, separators=(",", ":")).encode()).decode().rstrip("=")
+    signature = hmac.new(secret.encode(), payload.encode(), hashlib.sha256).hexdigest()
+    token = f"v1.{payload}.{signature}"
+    assert shared_session_address(token) == OWNER
+    assert shared_session_address(token + "bad") is None
+    with TestClient(app) as client:
+        client.cookies.set("deepsight_session", token)
+        assert client.get("/v1/auth/session").json()["address"] == OWNER
 
 
 def insert_claim(status="EVIDENCE_READY", owner=OWNER):

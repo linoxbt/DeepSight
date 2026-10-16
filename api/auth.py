@@ -1,5 +1,8 @@
 """Wallet proof sessions. Nonces are one-use; bearer secrets never enter the DB."""
 import hashlib
+import hmac
+import base64
+import json
 import os
 import secrets
 import time
@@ -29,10 +32,32 @@ def check_origin(request: Request) -> None:
         raise HTTPException(403, "Cross-site writes are not allowed")
 
 
+def shared_session_address(token: str) -> str | None:
+    """Accept a signed web session when auth runs on the Netlify frontend."""
+    secret = os.environ.get("DEEPSIGHT_AUTH_SECRET", "")
+    parts = token.split(".")
+    if len(secret) < 32 or len(parts) != 3 or parts[0] != "v1":
+        return None
+    expected = hmac.new(secret.encode(), parts[1].encode(), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected, parts[2]):
+        return None
+    try:
+        payload = json.loads(base64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4)))
+        address, expires = payload["a"], payload["e"]
+        if isinstance(address, str) and len(address) == 42 and address.startswith("0x") and all(c in "0123456789abcdef" for c in address[2:]) and isinstance(expires, int) and expires > int(time.time()):
+            return address
+    except (ValueError, KeyError, TypeError, UnicodeDecodeError):
+        pass
+    return None
+
+
 def current_user(request: Request) -> str:
     if request.method not in ("GET", "HEAD"):
         check_origin(request)
     token = request.cookies.get(COOKIE, "")
+    shared_user = shared_session_address(token)
+    if shared_user:
+        return shared_user
     with SessionLocal() as db:
         session = db.get(AuthSession, hashlib.sha256(token.encode()).hexdigest())
         if not session or session.expires <= int(time.time()):

@@ -48,7 +48,7 @@ export default function ClaimDetailPage() {
   async function load() {
     const ops = await api(`/v1/claims/${params.id}/operations`);
     setOperations(ops.operations);
-    const session = await api("/v1/auth/session").catch(() => ({ address: "" }));
+    const session = await api("/api/auth/session").catch(() => ({ address: "" }));
     setViewer(session.address);
     const [claimResponse, timelineResponse, finalityResponse] = await Promise.all([
       fetch(`/v1/claims/${params.id}`),

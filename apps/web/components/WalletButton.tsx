@@ -13,22 +13,22 @@ export function WalletButton() {
   const [session, setSession] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  useEffect(() => { api("/v1/auth/session").then(body => setSession(body.address)).catch(() => setSession("")); }, [address]);
+  useEffect(() => { api("/api/auth/session").then(body => setSession(body.address)).catch(() => setSession("")); }, [address]);
 
   async function signIn() {
     if (!address) { await open(); return; }
     setBusy(true); setError("");
     try {
-      const challenge = await api("/v1/auth/challenge", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ address }) });
+      const challenge = await api("/api/auth/challenge", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ address }) });
       const signature = await signMessageAsync({ message: challenge.message });
-      const body = await api("/v1/auth/session", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ challenge_id: challenge.id, signature }) });
+      const body = await api("/api/auth/session", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ challenge_id: challenge.id, signature }) });
       setSession(body.address);
       window.dispatchEvent(new Event("deepsight-auth"));
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Sign-in failed"); }
     finally { setBusy(false); }
   }
   async function signOut() {
-    try { await api("/v1/auth/session", { method: "DELETE" }); setSession(""); window.dispatchEvent(new Event("deepsight-auth")); }
+    try { await api("/api/auth/session", { method: "DELETE" }); setSession(""); window.dispatchEvent(new Event("deepsight-auth")); }
     catch (reason) { setError(reason instanceof Error ? reason.message : "Sign-out failed"); }
   }
   if (!walletReady) return <span className="wallet-quiet">Wallet unavailable</span>;
