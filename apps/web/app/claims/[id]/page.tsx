@@ -17,6 +17,7 @@ type Claim = {
   rationale: string;
   scientific_status: string;
   scientific_confirmation: boolean;
+  review_resolution: string;
   manifest_hash: string;
   chain_status: string;
   chain_note: string;
@@ -135,6 +136,7 @@ export default function ClaimDetailPage() {
             <p className="hash mono">{claim.manifest_hash}</p>
             <p className="fine muted">{finality}</p>
             <p className="fine muted">Chain status {claim.chain_status}. {claim.chain_claim_id || "No chain claim id."}</p>
+            <p className="fine muted">Human review: {claim.review_resolution?.replaceAll("_", " ") || "pending"}.</p>
             {claim.chain_tx ? <p className="hash mono">{claim.chain_tx}</p> : null}
           </section>
           {viewer && (claim.status === "FINALIZED" || claim.status === "NEEDS_REVIEW") ? (

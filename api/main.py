@@ -15,10 +15,10 @@ from datetime import datetime, timezone
 from typing import Any
 
 import numpy as np
-from fastapi import FastAPI, HTTPException, Depends, Response, Request
+from fastapi import FastAPI, HTTPException, Depends, Response, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import select, and_, or_, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.exc import StaleDataError
 from fastapi.responses import JSONResponse
@@ -56,6 +56,8 @@ from api.chain_ops import router as chain_router, idle as require_chain_idle
 app.include_router(chain_router)
 from api.jobs import router as jobs_router
 app.include_router(jobs_router)
+from api.images import router as images_router
+app.include_router(images_router)
 @app.exception_handler(StaleDataError)
 async def stale_claim(_request, _error):
     return JSONResponse(status_code=409, content={"detail": "Claim changed concurrently. Refresh before retrying."})
@@ -219,6 +221,7 @@ def _claim_out(row: ClaimRow) -> dict[str, Any]:
         "chain_status": row.chain_status or "not_submitted",
         "chain_tx": row.chain_tx or "",
         "chain_note": row.chain_note or _chain_note_default(),
+        "review_resolution": row.review_resolution or "pending",
         "scientific_confirmation": False,
         "created_at": row.created_at,
         "updated_at": row.updated_at,
@@ -288,7 +291,10 @@ def targets() -> dict[str, Any]:
 
 
 @app.post("/v1/datasets/import")
-def import_dataset(body: ImportIn, user: str = Depends(current_user)) -> dict[str, Any]:
+def import_dataset(body: ImportIn, request: Request = None, user: str = Depends(current_user)) -> dict[str, Any]:
+    if request is not None:
+        rate_limit(request, f"direct-import:{user}", 3, 3600)
+        rate_limit(request, "direct-import-global", 30, 3600, global_scope=True)
     try:
         tic = normalize_tic(body.tic)
     except MastError as exc:
@@ -373,7 +379,10 @@ def _load_curve(target_id: str) -> tuple[dict[str, Any], np.ndarray, np.ndarray]
 
 
 @app.post("/v1/analyses")
-def create_analysis(body: AnalysisIn, user: str = Depends(current_user)) -> dict[str, Any]:
+def create_analysis(body: AnalysisIn, request: Request = None, user: str = Depends(current_user)) -> dict[str, Any]:
+    if request is not None:
+        rate_limit(request, f"direct-analysis:{user}", 3, 3600)
+        rate_limit(request, "direct-analysis-global", 30, 3600, global_scope=True)
     target, time, flux = _load_curve(body.target_id)
     series = {"time_days": time.tolist(), "flux": flux.tolist()}
     series_sha = evidence.put_json(series, owner=user)
@@ -612,10 +621,18 @@ def supersede_claim(claim_id: str, user: str = Depends(current_user)) -> dict[st
 
 
 @app.get("/v1/claims")
-def list_claims() -> dict[str, Any]:
+def list_claims(limit: int = Query(50, ge=1, le=100), cursor: str = "") -> dict[str, Any]:
     with SessionLocal() as session:
-        rows = session.scalars(select(ClaimRow).order_by(ClaimRow.created_at.desc())).all()
-        return {"claims": [_claim_out(row) for row in rows]}
+        statement = select(ClaimRow)
+        if cursor:
+            previous = session.get(ClaimRow, cursor)
+            if previous is None:
+                raise HTTPException(422, "Invalid claim cursor")
+            statement = statement.where(or_(ClaimRow.created_at < previous.created_at,
+                                            and_(ClaimRow.created_at == previous.created_at, ClaimRow.id < previous.id)))
+        rows = session.scalars(statement.order_by(ClaimRow.created_at.desc(), ClaimRow.id.desc()).limit(limit + 1)).all()
+        page = rows[:limit]
+        return {"claims": [_claim_out(row) for row in page], "next_cursor": page[-1].id if len(rows) > limit else None}
 
 
 @app.get("/v1/claims/{claim_id}")
@@ -676,7 +693,11 @@ def finality(claim_id: str) -> dict[str, Any]:
 @app.get("/v1/discoveries")
 def discoveries() -> dict[str, Any]:
     with SessionLocal() as session:
-        rows = session.scalars(select(ClaimRow).order_by(ClaimRow.created_at.desc())).all()
+        rows = session.scalars(select(ClaimRow).where(
+            ClaimRow.chain_protocol_result == "EVIDENCE_SUFFICIENT",
+            ClaimRow.status == "FINALIZED", ClaimRow.chain_claim_id != "",
+            ClaimRow.chain_status == "FINALIZED", ClaimRow.chain_execution == "SUCCESS",
+        ).order_by(ClaimRow.created_at.desc()).limit(100)).all()
         published = []
         for row in rows:
             if (row.chain_protocol_result != "EVIDENCE_SUFFICIENT"
@@ -747,7 +768,10 @@ def radio_catalog(body: RadioSearchIn, request: Request) -> dict[str, Any]:
 
 
 @app.post("/v1/radio/analyze")
-def radio_analyze(user: str = Depends(current_user)) -> dict[str, Any]:
+def radio_analyze(request: Request = None, user: str = Depends(current_user)) -> dict[str, Any]:
+    if request is not None:
+        rate_limit(request, f"direct-radio:{user}", 3, 3600)
+        rate_limit(request, "direct-radio-global", 30, 3600, global_scope=True)
     try:
         result = analyze_tutorial(_radio_cache())
     except ArchiveError as exc:
@@ -825,11 +849,13 @@ def create_radio_claim(body: ClaimIn, user: str = Depends(current_user)) -> dict
 @app.get("/v1/reviews")
 def review_queue() -> dict[str, Any]:
     with SessionLocal() as session:
-        rows = session.scalars(select(ClaimRow).order_by(ClaimRow.updated_at.desc())).all()
-        reviewed_ids = set(session.scalars(select(AttestationRow.claim_id)).all())
-        queued = [_claim_out(row) for row in rows if row.status == "NEEDS_REVIEW" and row.id not in reviewed_ids]
+        rows = session.scalars(select(ClaimRow).where(
+            ClaimRow.status == "NEEDS_REVIEW",
+            or_(ClaimRow.review_resolution == "", ClaimRow.review_resolution.is_(None)),
+        ).order_by(ClaimRow.updated_at.desc()).limit(100)).all()
+        queued = [_claim_out(row) for row in rows]
     return {
-        "note": "Human review records a note. It does not change scientific status to confirmed.",
+        "note": "Two independent matching attestations resolve the review. They do not confirm a celestial object or signal.",
         "claims": queued,
     }
 
@@ -838,17 +864,28 @@ def review_queue() -> dict[str, Any]:
 def review_note(claim_id: str, body: ReviewNoteIn, user: str = Depends(current_user)) -> dict[str, Any]:
     require_reviewer(user)
     with SessionLocal() as session:
-        claim = _claim_or_404(session, claim_id)
+        if session.bind.dialect.name == "sqlite":
+            session.execute(text("BEGIN IMMEDIATE"))
+        claim = session.scalar(select(ClaimRow).where(ClaimRow.id == claim_id).with_for_update())
+        if claim is None:
+            raise HTTPException(404, "Claim not found")
         if claim.status != "NEEDS_REVIEW":
             raise HTTPException(status_code=409, detail="A review note is only attached to NEEDS_REVIEW claims")
         if claim.owner == user:
             raise HTTPException(status_code=403, detail="A claimant cannot attest to their own evidence")
+        if claim.review_resolution:
+            raise HTTPException(status_code=409, detail="This review has already been resolved")
         session.add(AttestationRow(
             id="att_" + uuid.uuid4().hex[:16], claim_id=claim.id, manifest_hash=claim.manifest_hash,
             reviewer=user, decision=body.decision, note=body.note.strip(),
             conflict_disclosure=body.conflict_disclosure.strip(), created_at=_now(),
         ))
         _add_event(session, claim.id, "HUMAN_REVIEW", f"Reviewer {user}: {body.decision}. {body.note.strip()}")
+        session.flush()
+        decisions = session.scalars(select(AttestationRow.decision).where(AttestationRow.claim_id == claim.id)).all()
+        if decisions.count(body.decision) >= 2 and body.decision != "inconclusive":
+            claim.review_resolution = body.decision
+            _add_event(session, claim.id, "REVIEW_RESOLVED", f"Two independent reviewers recorded {body.decision}.")
         session.commit()
         session.refresh(claim)
         return _claim_out(claim)

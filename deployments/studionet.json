@@ -8,5 +8,6 @@
   "contract_address": "0x6B6dC06981Aa6903434dBab601D8b61c5fD57ff8",
   "finalized_execution": "SUCCESS",
   "code_matches_source": true,
-  "read_method_check": "blocked_by_studionet_rate_limit"
+  "read_method_check": "passed",
+  "finalized_at": "2026-10-16T12:02:05.942Z"
 }

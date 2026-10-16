@@ -2,10 +2,11 @@
 import json
 import time
 import uuid
+import threading
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import select, update
+from sqlalchemy import select, update, text
 
 from api.auth import current_user
 from api.db import JobRow, SessionLocal
@@ -28,6 +29,11 @@ def enqueue(body: JobIn, request: Request, user: str = Depends(current_user)):
     if body.kind == "import" and not body.tic:
         raise HTTPException(422, "A TIC identifier is required")
     with SessionLocal() as db:
+        # Serialize the count-and-insert on both supported database engines.
+        if db.bind.dialect.name == "postgresql":
+            db.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:owner, 0))"), {"owner": user})
+        else:
+            db.execute(text("BEGIN IMMEDIATE"))
         active = db.scalars(select(JobRow).where(JobRow.owner == user, JobRow.status.in_(("queued", "running")))).all()
         if len(active) >= 3:
             raise HTTPException(429, "Wait for your current jobs to finish")
@@ -78,6 +84,19 @@ def run_one() -> bool:
         if acquired.rowcount != 1:
             return True
         job_id, kind, owner, payload = job.id, job.kind, job.owner, json.loads(job.payload)
+    stop_heartbeat = threading.Event()
+    def heartbeat():
+        while not stop_heartbeat.wait(30):
+            try:
+                with SessionLocal() as pulse:
+                    pulse.execute(update(JobRow).where(JobRow.id == job_id, JobRow.status == "running")
+                                  .values(updated=int(time.time())))
+                    pulse.commit()
+            except Exception:
+                import logging
+                logging.exception("Job %s heartbeat failed", job_id)
+    pulse_thread = threading.Thread(target=heartbeat, daemon=True)
+    pulse_thread.start()
     try:
         if kind == "analysis":
             result = create_analysis(AnalysisIn(target_id=payload["target_id"]), user=owner)
@@ -91,7 +110,11 @@ def run_one() -> bool:
         error = str(exc.detail) if isinstance(exc, HTTPException) else "Analysis failed. Check worker logs and retry."
         import logging
         logging.exception("Job %s failed", job_id)
+    finally:
+        stop_heartbeat.set()
+        pulse_thread.join(timeout=2)
     with SessionLocal() as db:
-        db.execute(update(JobRow).where(JobRow.id == job_id).values(status=status, result=json.dumps(result) if result else "", error=error, updated=int(time.time())))
+        db.execute(update(JobRow).where(JobRow.id == job_id, JobRow.status == "running")
+                   .values(status=status, result=json.dumps(result) if result else "", error=error, updated=int(time.time())))
         db.commit()
     return True

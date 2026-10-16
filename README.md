@@ -117,6 +117,9 @@ the published record, not the scientific measurements or the external archives.
 
 `docker-compose.yml` runs PostgreSQL, API, worker, and web. Supply
 `POSTGRES_PASSWORD` in the environment, then run `docker compose up --build`.
+The API applies versioned Alembic migrations before it starts; the worker
+requires the resulting schema revision. For separately deployed services, run
+`alembic upgrade head` once as a release step before starting either process.
 The relay is disabled in this default configuration. API and worker share the
 archive volume. The Python image includes Node and the pinned adapter packages.
 
@@ -124,6 +127,14 @@ For separately hosted web and API services, set `API_PROXY` when building the
 Next.js app and set `DEEPSIGHT_ORIGIN` to the public web origin. Keep the same
 origin proxy for session cookies. Netlify builds fail if `API_PROXY` is absent
 or does not use HTTPS; a loopback rewrite cannot serve a deployed site.
+
+Set `DEEPSIGHT_S3_BUCKET` and standard AWS S3 credentials for durable evidence
+objects. `DEEPSIGHT_S3_ENDPOINT` selects an S3-compatible service. Set
+`DEEPSIGHT_REQUIRE_OBJECT_STORE=1` in production so new evidence cannot fall
+back to database text when the bucket is missing. Keep independent, tested
+backups of PostgreSQL and the bucket; object checksums are verified on read.
+If the API is behind a reverse proxy, set `DEEPSIGHT_TRUSTED_PROXY_CIDRS` to
+the proxy's exact source network before using `X-Forwarded-For` for rate limits.
 
 ## Checks
 

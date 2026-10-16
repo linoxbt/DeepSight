@@ -35,11 +35,12 @@ if (result.status === "FINALIZED" && result.contract_address) {
     if (result.code_matches_source && result.readable) {
       record.contract_address = result.contract_address;
       record.finalized_at = new Date().toISOString();
+      record.read_method_check = "passed";
       writeFileSync(recordPath, JSON.stringify(record, null, 2) + "\n", { mode: 0o600 });
     }
   }
 }
-if (result.status !== "FINALIZED" || !result.contract_address || !result.code_matches_source ||
+if (result.status !== "FINALIZED" || !result.contract_address || !result.code_matches_source || result.readable !== true ||
     (record.contract_address && record.contract_address.toLowerCase() !== result.contract_address.toLowerCase())) {
   process.exitCode = 1;
 }

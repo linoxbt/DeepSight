@@ -2,6 +2,7 @@
 import hashlib
 import importlib.metadata
 import json
+import os
 import platform
 from functools import lru_cache
 from pathlib import Path
@@ -16,6 +17,18 @@ from api.auth import current_user
 router = APIRouter(prefix="/v1", tags=["evidence"])
 
 
+def _object_store():
+    bucket = os.environ.get("DEEPSIGHT_S3_BUCKET", "").strip()
+    if not bucket:
+        if os.environ.get("DEEPSIGHT_REQUIRE_OBJECT_STORE") == "1":
+            raise HTTPException(503, "Evidence object storage is not configured")
+        return None
+    import boto3
+    endpoint = os.environ.get("DEEPSIGHT_S3_ENDPOINT", "").strip()
+    client = boto3.client("s3", **({"endpoint_url": endpoint} if endpoint else {}))
+    return client, bucket
+
+
 def put_json(document: dict, owner: str | None = None) -> str:
     content = json.dumps(document, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
     digest = hashlib.sha256(content.encode()).hexdigest()
@@ -23,7 +36,14 @@ def put_json(document: dict, owner: str | None = None) -> str:
         # Concurrent writers may insert the same content. Insert the grant only
         # after the artifact insert has settled so a duplicate never loses access.
         if db.get(ArtifactRow, digest) is None:
-            db.add(ArtifactRow(digest=digest, content=content, public=owner is None))
+            store = _object_store()
+            if store:
+                client, bucket = store
+                try:
+                    client.put_object(Bucket=bucket, Key=f"artifacts/{digest}.json", Body=content.encode(), ContentType="application/json")
+                except Exception as exc:
+                    raise HTTPException(503, "Evidence object storage is unavailable") from exc
+            db.add(ArtifactRow(digest=digest, content=f"s3:{digest}" if store else content, public=owner is None))
             try:
                 db.commit()
             except IntegrityError:
@@ -43,6 +63,15 @@ def read(digest: str) -> str:
         if row is None:
             raise HTTPException(404, "Evidence artifact not found; legacy analyses must be rerun")
         content = row.content
+    if content.startswith("s3:"):
+        store = _object_store()
+        if store is None:
+            raise HTTPException(503, "Evidence object storage is not configured")
+        client, bucket = store
+        try:
+            content = client.get_object(Bucket=bucket, Key=f"artifacts/{digest}.json")["Body"].read().decode("utf-8")
+        except Exception as exc:
+            raise HTTPException(503, "Evidence object storage is unavailable") from exc
     if hashlib.sha256(content.encode()).hexdigest() != digest:
         raise HTTPException(409, "Stored evidence failed checksum verification")
     return content

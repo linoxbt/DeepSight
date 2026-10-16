@@ -22,7 +22,8 @@ def test_challenge_and_retract_stay_local_without_a_contract(monkeypatch):
     assert reviewed.json()["status"] == "NEEDS_REVIEW"
 
     reviewer = "0x" + "2" * 40
-    monkeypatch.setenv("DEEPSIGHT_REVIEWERS", reviewer)
+    second_reviewer = "0x" + "3" * 40
+    monkeypatch.setenv("DEEPSIGHT_REVIEWERS", f"{reviewer},{second_reviewer}")
     app.dependency_overrides[current_user] = lambda: reviewer
     noted = client.post(f"/v1/claims/{claim_id}/review-note", json={
         "note": "Provenance still needs a person.", "decision": "requests_revision",
@@ -32,6 +33,14 @@ def test_challenge_and_retract_stay_local_without_a_contract(monkeypatch):
     attestations = client.get(f"/v1/research/attestations?claim_id={claim_id}").json()["attestations"]
     assert len(attestations) == 1
     assert attestations[0]["reviewer"] == reviewer
+    assert len(client.get("/v1/reviews").json()["claims"]) == 1
+    app.dependency_overrides[current_user] = lambda: second_reviewer
+    resolved = client.post(f"/v1/claims/{claim_id}/review-note", json={
+        "note": "A revised archive observation is needed.", "decision": "requests_revision",
+        "conflict_disclosure": "none",
+    })
+    assert resolved.status_code == 200
+    assert resolved.json()["review_resolution"] == "requests_revision"
     assert client.get("/v1/reviews").json()["claims"] == []
     app.dependency_overrides[current_user] = lambda: "0x" + "1" * 40
 

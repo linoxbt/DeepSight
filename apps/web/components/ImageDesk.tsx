@@ -1,9 +1,11 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { api } from "@/lib/api";
 
 type Mark = { x: number; y: number };
 type ImageInfo = { width: number; height: number; histogram: number[] };
+type SavedImage = { id: string; filename: string; image_url: string; note: string; marks: Mark[] };
 
 export function ImageDesk() {
   const [file, setFile] = useState<File | null>(null);
@@ -12,6 +14,23 @@ export function ImageDesk() {
   const [marks, setMarks] = useState<Mark[]>([]);
   const [note, setNote] = useState("");
   const [error, setError] = useState("");
+  const [savedId, setSavedId] = useState("");
+  const [savedImages, setSavedImages] = useState<SavedImage[]>([]);
+  const [savedError, setSavedError] = useState("");
+  const [refreshIndex, setRefreshIndex] = useState(0);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    const refresh = () => api<{ images: SavedImage[] }>("/v1/images")
+      .then(body => { setSavedImages(body.images); setSavedError(""); })
+      .catch((reason: Error) => {
+        setSavedImages([]);
+        setSavedError(reason.message.includes("(401)") ? "" : "Saved images are unavailable. Please try again later.");
+      });
+    refresh();
+    window.addEventListener("deepsight-auth", refresh);
+    return () => window.removeEventListener("deepsight-auth", refresh);
+  }, [refreshIndex]);
 
   useEffect(() => {
     if (!file) return;
@@ -42,7 +61,7 @@ export function ImageDesk() {
   }, [file]);
 
   function chooseImage(next: File | undefined) {
-    setError(""); setInfo(null); setMarks([]); setNote("");
+    setError(""); setInfo(null); setMarks([]); setNote(""); setSavedId("");
     if (!next) { setFile(null); return; }
     if (!["image/jpeg", "image/png", "image/webp"].includes(next.type)) {
       setFile(null); setError("Choose a JPG, PNG, or WebP image."); return;
@@ -69,9 +88,40 @@ export function ImageDesk() {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
+  async function saveToWorkspace() {
+    if (!file || !info) return;
+    setSaving(true); setError("");
+    try {
+      let id = savedId;
+      if (!id) {
+        const form = new FormData();
+        form.append("file", file);
+        const uploaded = await api<SavedImage>("/v1/images", { method: "POST", body: form });
+        id = uploaded.id;
+        setSavedId(id);
+      }
+      const saved = await api<SavedImage>(`/v1/images/${id}`, {
+        method: "PUT", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ note, marks }),
+      });
+      setSavedImages(current => [saved, ...current.filter(item => item.id !== saved.id)]);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Image could not be saved"); }
+    finally { setSaving(false); }
+  }
+
+  async function openSaved(item: SavedImage) {
+    setError("");
+    try {
+      const response = await fetch(item.image_url);
+      if (!response.ok) throw new Error("Saved image could not be opened. Sign in with its wallet and retry.");
+      setFile(new File([await response.blob()], item.filename));
+      setNote(item.note); setMarks(item.marks); setSavedId(item.id);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Saved image could not be opened"); }
+  }
+
   const max = Math.max(1, ...(info?.histogram || []));
   return <section className="panel image-desk" id="image-desk">
-    <div className="desk-heading"><div><p className="kicker">Your image</p><h2>Look closer at a sky image</h2><p className="muted">Add a photo, tap points of interest, and keep a note. Your image stays in this browser.</p></div></div>
+    <div className="desk-heading"><div><p className="kicker">Your image</p><h2>Look closer at a sky image</h2><p className="muted">Add a photo, tap points of interest, and keep a note. Sign in to save it privately to your workspace.</p></div></div>
     <label className="upload-zone">
       <span aria-hidden="true" className="upload-symbol">✦</span>
       <strong>{file ? "Choose a different image" : "Choose a sky image"}</strong>
@@ -100,8 +150,10 @@ export function ImageDesk() {
         <label htmlFor="image-note">What caught your eye?</label>
         <textarea id="image-note" value={note} onChange={(event) => setNote(event.target.value)} placeholder="Describe a feature or question…" rows={4} maxLength={2000} />
         <p className="fine muted">{marks.length} {marks.length === 1 ? "point" : "points"} marked</p>
-        <div className="actions"><button type="button" className="primary" disabled={!info} onClick={downloadNotes}>Download notes</button><button type="button" className="ghost" disabled={marks.length === 0} onClick={() => setMarks([])}>Clear marks</button></div>
+        <div className="actions"><button type="button" className="primary" disabled={!info || saving} onClick={saveToWorkspace}>{saving ? "Saving…" : savedId ? "Update saved image" : "Save image to workspace"}</button><button type="button" className="ghost" disabled={!info} onClick={downloadNotes}>Download notes</button><button type="button" className="ghost" disabled={marks.length === 0} onClick={() => setMarks([])}>Clear marks</button></div>
       </div>
     </div> : null}
+    {savedError ? <div className="actions"><p role="alert" className="fail">{savedError}</p><button type="button" className="ghost" onClick={() => setRefreshIndex(value => value + 1)}>Retry saved images</button></div> : null}
+    {savedImages.length > 0 ? <div className="stack"><h3>Saved images</h3>{savedImages.map(item => <button key={item.id} type="button" className="ghost" onClick={() => openSaved(item)}>{item.filename} · {item.note || "No note yet"}</button>)}</div> : null}
   </section>;
 }

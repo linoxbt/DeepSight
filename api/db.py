@@ -71,6 +71,7 @@ class ClaimRow(Base):
     chain_status: Mapped[str] = mapped_column(String, default="not_submitted")
     chain_tx: Mapped[str] = mapped_column(Text, default="")
     chain_note: Mapped[str] = mapped_column(Text, default="")
+    review_resolution: Mapped[str] = mapped_column(String, default="")
     created_at: Mapped[str] = mapped_column(String)
     updated_at: Mapped[str] = mapped_column(String)
 
@@ -111,6 +112,15 @@ class AttestationRow(Base):
 
 
 def init_db() -> None:
+    if os.environ.get("DEEPSIGHT_REQUIRE_MIGRATIONS") == "1":
+        with engine.connect() as connection:
+            try:
+                version = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+            except Exception as exc:
+                raise RuntimeError("Database migrations have not been applied") from exc
+            if version != "0003":
+                raise RuntimeError(f"Unsupported database schema revision: {version}")
+        return
     Base.metadata.create_all(engine)
     _ensure_claim_columns()
     with engine.begin() as connection:
@@ -136,6 +146,7 @@ def _ensure_claim_columns() -> None:
         "chain_status": "ALTER TABLE claims ADD COLUMN chain_status VARCHAR DEFAULT 'not_submitted'",
         "chain_tx": "ALTER TABLE claims ADD COLUMN chain_tx TEXT DEFAULT ''",
         "chain_note": "ALTER TABLE claims ADD COLUMN chain_note TEXT DEFAULT ''",
+        "review_resolution": "ALTER TABLE claims ADD COLUMN review_resolution VARCHAR DEFAULT ''",
     }
     with engine.begin() as connection:
         present = {col["name"] for col in inspect(connection).get_columns("claims")}
@@ -220,3 +231,19 @@ class ChainOperation(Base):
     tx_hash: Mapped[str] = mapped_column(String, default="")
     error: Mapped[str] = mapped_column(Text, default="")
     updated: Mapped[int] = mapped_column(Integer)
+
+
+class ImageRow(Base):
+    __tablename__ = "images"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    owner: Mapped[str] = mapped_column(String, index=True)
+    filename: Mapped[str] = mapped_column(String)
+    media_type: Mapped[str] = mapped_column(String)
+    sha256: Mapped[str] = mapped_column(String)
+    size_bytes: Mapped[int] = mapped_column(Integer)
+    width: Mapped[int] = mapped_column(Integer)
+    height: Mapped[int] = mapped_column(Integer)
+    note: Mapped[str] = mapped_column(Text, default="")
+    marks_json: Mapped[str] = mapped_column(Text, default="[]")
+    created_at: Mapped[str] = mapped_column(String)

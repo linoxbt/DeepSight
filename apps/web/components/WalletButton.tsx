@@ -14,15 +14,18 @@ export function WalletButton() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const walletRef = useRef("");
+  const authGeneration = useRef(0);
   walletRef.current = isConnected ? address?.toLowerCase() || "" : "";
   useEffect(() => {
     let active = true;
-    api("/v1/auth/session").then(body => { if (active) setSession(body.address); }).catch(() => { if (active) setSession(""); });
+    const generation = authGeneration.current;
+    api("/v1/auth/session").then(body => { if (active && generation === authGeneration.current) setSession(body.address); }).catch(() => { if (active && generation === authGeneration.current) setSession(""); });
     return () => { active = false; };
   }, []);
 
   async function signIn() {
     if (!address) { await open(); return; }
+    ++authGeneration.current;
     const signingAddress = address.toLowerCase();
     setBusy(true); setError("");
     try {
@@ -36,6 +39,7 @@ export function WalletButton() {
     finally { setBusy(false); }
   }
   async function signOut() {
+    ++authGeneration.current;
     setBusy(true); setError("");
     try { await api("/v1/auth/session", { method: "DELETE" }); setSession(""); window.dispatchEvent(new Event("deepsight-auth")); }
     catch (reason) { setError(reason instanceof Error ? reason.message : "Sign-out failed"); }

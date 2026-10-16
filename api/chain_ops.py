@@ -120,6 +120,11 @@ def prepare(claim_id: str, body: IntentIn, user: str = Depends(current_user)):
             raise HTTPException(422, "Provide a challenge reason of at least 20 characters")
         if body.action == "appeal" and body.tx_hash not in json.loads(claim.chain_tx or "{}").values():
             raise HTTPException(422, "Transaction does not belong to this claim")
+        if body.action == "appeal":
+            previous = chain.invoke({"action": "receipt", "tx_hash": body.tx_hash}, cfg)
+            if not previous.get("ok") or previous.get("status") != "FINALIZED":
+                raise HTTPException(409, "The appealed transaction must be finalized and readable")
+            payload["prior_rounds"] = int(previous.get("rounds", 0))
         if body.action == "supersede":
             manifest = json.loads(claim.manifest_json)
             if manifest.get("claimant_address") != relay_address or manifest.get("researcher_address") != user:
@@ -210,7 +215,9 @@ def execute_one():
         db.execute(update(ChainOperation).where(ChainOperation.status == "reconciling", ChainOperation.updated < int(time.time())-180).values(status="submitted"))
         db.commit()
         selectable = ("queued", "submitted") if os.environ.get("DEEPSIGHT_RELAY_ENABLED") == "1" else ("submitted",)
-        op = db.scalar(select(ChainOperation).where(ChainOperation.status.in_(selectable)).order_by(ChainOperation.updated).limit(1))
+        op = db.scalar(select(ChainOperation).where(
+            ChainOperation.status.in_(selectable), ChainOperation.updated <= int(time.time())
+        ).order_by(ChainOperation.updated).limit(1))
         if op is None:
             return False
         claim = claim_for(db, op.claim_id)
@@ -218,7 +225,7 @@ def execute_one():
         cfg = chain.load_config()
         if not cfg or cfg["address"] != payload["contract"]:
             op.error = "Relay configuration differs from the signed contract; operation is paused."
-            op.updated = int(time.time())
+            op.updated = int(time.time()) + 60
             db.commit()
             return True
         if op.status == "queued":
@@ -266,7 +273,9 @@ def execute_one():
                 op.error = "Network reconciliation unavailable; worker will retry this read."
         if op.status == "reconciling":
             op.status = "submitted"
-        op.updated = int(time.time())
+        # A pending receipt or temporarily unavailable read must not monopolize
+        # the outbox or exhaust the StudioNet RPC budget.
+        op.updated = int(time.time()) + (30 if op.status == "submitted" and op.error else 0)
         claim.chain_note = op.error or f"{op.action}: {op.status}; transaction {op.tx_hash or 'not yet broadcast'}"
         db.commit()
         return True
@@ -315,6 +324,15 @@ def _finish(db, op, claim, cfg, payload):
         raise RuntimeError("Contract claim state has not caught up with the finalized transaction")
     if op.stage == "supersede" and not state.get("superseded_by"):
         raise RuntimeError("Contract replacement is not readable yet")
+    if op.stage == "appeal":
+        appealed = chain.invoke({"action": "receipt", "tx_hash": payload["tx_hash"]}, cfg)
+        if (not appealed.get("ok") or appealed.get("status") != "FINALIZED"
+                or int(appealed.get("rounds", 0)) <= int(payload["prior_rounds"])):
+            raise RuntimeError("Appealed transaction is not finalized")
+        # An appeal changes the consensus outcome of its target transaction;
+        # a readable claim alone does not prove that the appeal took effect.
+        if appealed.get("execution") not in ("SUCCESS", "FAILED"):
+            raise RuntimeError("Appealed transaction outcome is not yet known")
     if op.stage == "supersede":
         replacement_view = chain.invoke({"action": "read", "method": "read_claim_by_manifest", "args": [payload["replacement_hash"]]}, cfg)
         replacement_state = replacement_view.get("result")

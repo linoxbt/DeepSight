@@ -297,9 +297,12 @@ def test_outbox_retries_stale_contract_view_after_finality(monkeypatch):
     monkeypatch.setattr("api.chain.invoke", invoke)
     for _ in range(4):
         assert chain_ops.execute_one()
-    assert chain_ops.execute_one()
+    assert chain_ops.execute_one() is False  # stale reads back off instead of hammering RPC
     with SessionLocal() as db:
-        assert db.get(ChainOperation, operation_id).status == "submitted"
+        operation = db.get(ChainOperation, operation_id)
+        assert operation.status == "submitted"
+        operation.updated = 0
+        db.commit()
     view_status["value"] = "FINALIZED"
     assert chain_ops.execute_one()
     with SessionLocal() as db:
@@ -318,6 +321,26 @@ def test_uncertain_broadcast_is_not_automatically_repeated(monkeypatch):
     with SessionLocal() as db:
         assert db.get(ChainOperation, operation_id).status == "unknown"
     assert len(calls) == 1
+
+
+def test_misconfigured_operation_yields_outbox_to_other_claims(monkeypatch):
+    operation_id = queue_signed_operation(monkeypatch)
+    monkeypatch.setattr("api.chain.load_config", lambda: {"address": "0x" + "5" * 40})
+    with SessionLocal() as db:
+        old = db.get(ChainOperation, operation_id)
+        db.add(ChainOperation(id="op_other", claim_id=old.claim_id, actor=old.actor,
+                              action="submit", stage="register", status="queued",
+                              payload=json.dumps({"contract": "0x" + "4" * 40}),
+                              authorization="test", signature="test", updated=old.updated + 1))
+        db.commit()
+    assert chain_ops.execute_one()
+    with SessionLocal() as db:
+        assert db.get(ChainOperation, operation_id).updated > int(time.time())
+        db.get(ChainOperation, "op_other").updated = int(time.time()) - 1
+        db.commit()
+    assert chain_ops.execute_one()
+    with SessionLocal() as db:
+        assert db.get(ChainOperation, "op_other").updated > int(time.time())
 
 
 def test_finalized_failed_execution_is_not_success(monkeypatch):
@@ -349,6 +372,27 @@ def test_corrupt_artifact_is_not_served():
         db.commit()
     with TestClient(app) as client:
         assert client.get(f"/v1/artifacts/{digest}").status_code == 409
+
+
+def test_object_store_artifact_round_trip_and_checksum(monkeypatch):
+    import io
+    from api.db import ArtifactRow
+    objects = {}
+    class Store:
+        def put_object(self, *, Bucket, Key, Body, ContentType):
+            objects[(Bucket, Key)] = Body
+        def get_object(self, *, Bucket, Key):
+            return {"Body": io.BytesIO(objects[(Bucket, Key)])}
+    monkeypatch.setenv("DEEPSIGHT_S3_BUCKET", "evidence-test")
+    monkeypatch.setattr("boto3.client", lambda *args, **kwargs: Store())
+    digest = evidence.put_json({"samples": [1, 2, 3]})
+    with SessionLocal() as db:
+        assert db.get(ArtifactRow, digest).content == f"s3:{digest}"
+    assert json.loads(evidence.read(digest)) == {"samples": [1, 2, 3]}
+    objects[("evidence-test", f"artifacts/{digest}.json")] = b"corrupted"
+    with pytest.raises(Exception) as exc:
+        evidence.read(digest)
+    assert exc.value.status_code == 409
 
 
 def test_research_run_history_is_scoped_to_owner(monkeypatch):

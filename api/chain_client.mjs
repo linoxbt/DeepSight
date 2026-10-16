@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { createAccount, createClient } from "genlayer-js";
 import { studionet } from "genlayer-js/chains";
 import { Wallet } from "ethers";
+import { executionStatus } from "./chain_execution.mjs";
 
 const input = JSON.parse(readFileSync(0, "utf8"));
 const emit = (payload) => process.stdout.write(`${JSON.stringify(payload, (_, v) => typeof v === "bigint" ? v.toString() : v)}\n`);
@@ -21,10 +22,9 @@ try {
     emit({ ok: true, result: await client.readContract({ address: input.address, functionName: input.method, args: input.args }) });
   } else if (input.action === "receipt") {
     const receipt = await client.getTransaction({ hash: input.tx_hash });
-    const leader = receipt?.consensus_data?.leader_receipt?.[0];
-    const raw = String(receipt?.txExecutionResultName || receipt?.execution || leader?.execution_result || "").toUpperCase();
-    const execution = ["SUCCESS", "RETURN"].includes(raw) ? "SUCCESS" : raw.includes("ERROR") || raw.includes("REVERT") ? "FAILED" : "UNKNOWN";
-    emit({ ok: true, status: receipt?.statusName || receipt?.status_name || String(receipt?.status || ""), execution });
+    const execution = executionStatus(receipt);
+    emit({ ok: true, status: receipt?.statusName || receipt?.status_name || String(receipt?.status || ""),
+      execution, rounds: Number(receipt?.numOfRounds ?? 0), result: receipt?.resultName ?? receipt?.result ?? null });
   } else if (input.action === "appeal") {
     emit({ ok: true, hash: await client.appealTransaction({ txId: input.tx_hash }), status: "SUBMITTED" });
   } else {

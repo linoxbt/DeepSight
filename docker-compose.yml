@@ -11,6 +11,12 @@ x-backend: &backend
     DEEPSIGHT_CONTRACT_ADDRESS: ${DEEPSIGHT_CONTRACT_ADDRESS:-}
     DEEPSIGHT_KEYSTORE: ${DEEPSIGHT_KEYSTORE:-}
     DEEPSIGHT_CHAIN_PASSWORD: ${DEEPSIGHT_CHAIN_PASSWORD:-}
+    DEEPSIGHT_REQUIRE_MIGRATIONS: "1"
+    DEEPSIGHT_S3_BUCKET: ${DEEPSIGHT_S3_BUCKET:-}
+    DEEPSIGHT_S3_ENDPOINT: ${DEEPSIGHT_S3_ENDPOINT:-}
+    DEEPSIGHT_REQUIRE_OBJECT_STORE: ${DEEPSIGHT_REQUIRE_OBJECT_STORE:-0}
+    AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+    AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
   volumes:
     - research-data:/app/data
   depends_on:
@@ -34,6 +40,7 @@ services:
       retries: 12
   api:
     <<: *backend
+    command: sh -c "alembic upgrade head && uvicorn api.main:app --host 0.0.0.0 --port 8000"
     ports: ["127.0.0.1:8000:8000"]
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/v1/health')"]
