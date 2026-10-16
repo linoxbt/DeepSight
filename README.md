@@ -139,3 +139,9 @@ Tests cover signature replay and ownership, exact evidence retrieval, local/cont
 policy parity, an Astropy reference comparison, job privacy, provisional/finalized
 chain outcomes, and interrupted broadcast handling. They use isolated databases
 and mocked chain calls. CI runs Python tests, the frontend production build, and browser workflow checks.
+
+For a real local integration smoke test, run the production web app, Python API,
+and `python -m api.worker` against the same database, with `DEEPSIGHT_ORIGIN`
+set to the web origin. Then run `uv run python scripts/live_smoke.py`. The script
+accepts loopback origins only, creates a disposable wallet and local claims, and
+queries MAST, NASA Exoplanet Archive, Gaia, JPL Horizons, and Breakthrough Listen.

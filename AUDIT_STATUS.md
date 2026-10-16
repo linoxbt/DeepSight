@@ -1,6 +1,6 @@
 # DeepSight audit remediation status
 
-Updated 2026-10-16. The project is **not production ready**. The public Netlify site still returns HTTP 500 for `/v1/health`; no public Python API, worker, or PostgreSQL service is configured. The GenLayer contract has been deployed to StudioNet, with a finalized successful deployment and matching code, but its claim lifecycle has not been exercised live.
+Updated 2026-10-16. The project is **not production ready**. The public Netlify site still returns HTTP 500 for `/v1/health`; no public Python API, worker, or PostgreSQL service is configured. The GenLayer contract has been deployed to StudioNet, with a finalized successful deployment and matching code, but its claim lifecycle has not been exercised live. The wallet UI fix and the live local-stack checks below are not yet deployed to that public site.
 
 ## Verified fixes
 
@@ -22,6 +22,8 @@ Updated 2026-10-16. The project is **not production ready**. The public Netlify 
 | Job polling was fixed at two seconds | Fixed | Bounded backoff and visible progress |
 | Netlify silently rewrote API calls to its own loopback | Fixed for future builds | Netlify build now rejects missing/non-HTTPS `API_PROXY`; public service is still unavailable |
 | Claim detail and catalogue/discovery pages mishandled partial/API errors | Fixed | Guarded requests, independent detail loading, visible errors |
+| Clicking the connected-wallet control could act like signing out | Fixed locally | Wallet account control and app sign-out are separate; disposable EOA signed in through Chrome, and reopening its account did not disconnect it |
+| Slow Gaia queries became generic proxy 500 errors | Fixed locally | Next.js proxy timeout raised from 30 to 120 seconds; a 43-second Gaia response returned HTTP 200 through the frontend |
 
 ## Open release blockers
 
@@ -40,8 +42,11 @@ Updated 2026-10-16. The project is **not production ready**. The public Netlify 
 
 - `uv run pytest -q api/tests`: 63 passed.
 - Live MAST fetched TIC 259377017 sector 30 (16,436 usable cadences); NASA Exoplanet Archive, Gaia DR3, and JPL Horizons queries returned real data.
+- `uv run python scripts/live_smoke.py` against a local production web/API/worker stack: real wallet-signature session, NASA/ESA/JPL/Breakthrough Listen requests, MAST import, BLS analysis, evidence preflight, transit and radio claims, evidence bundle, and logout passed.
+- A disposable injected EOA connected and signed in through Chrome. Clicking its address reopened the wallet account modal while preserving the connection.
+- All 16 app pages returned HTTP 200 in Chrome against the local production stack; target search returned records.
 - `npm run build --prefix apps/web`: passed.
-- `npm run test:browser --prefix apps/web`: 9 passed with mocked API responses.
+- `npm run test:browser --prefix apps/web`: 10 passed, including connected-wallet persistence and mobile layout. These browser checks mock API responses except the separate disposable-EOA Chrome session described above.
 - `genvm-lint check contracts/proof_of_discovery.py`: passed.
 - `POSTGRES_PASSWORD=dev-only-validation docker compose config --quiet`: passed.
 - `git diff --check`: passed.

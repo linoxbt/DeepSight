@@ -14,6 +14,7 @@ const root = path.dirname(fileURLToPath(import.meta.url));
 const nextConfig = {
   outputFileTracingRoot: root,
   transpilePackages: ["@reown/appkit", "@reown/appkit-adapter-wagmi"],
+  experimental: { proxyTimeout: 120000 },
   async rewrites() {
     return [{ source: "/v1/:path*", destination: `${api}/v1/:path*` }];
   },
