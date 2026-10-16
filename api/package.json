@@ -1,0 +1,1 @@
+{"name":"deepsight-chain-adapter","private":true,"type":"module","dependencies":{"genlayer-js":"1.1.8","ethers":"6.15.0"}}

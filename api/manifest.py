@@ -11,7 +11,7 @@ SYNTHETIC_ARCHIVE = "DeepSight synthetic calibration"
 
 
 def canonicalize(document: dict[str, Any]) -> str:
-    return json.dumps(document, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return json.dumps(document, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
 
 
 def sha256_text(text: str) -> str:
@@ -24,12 +24,18 @@ def build_manifest(
     fit: dict[str, Any],
     series_sha256: str,
     analysis_id: str,
+    claimant_address: str,
+    researcher_address: str,
     cross_match: dict[str, Any],
     snapshot_sha256: str,
     git_commit: str,
+    environment_sha256: str = "",
+    diagnostics: list | None = None,
+    quality_flags: list | None = None,
 ) -> dict[str, Any]:
     limitations = [
         "Not scientifically confirmed",
+        "Period uncertainty is a conditional white-noise bootstrap; aliases and systematic noise are not included",
         "The signal-to-noise figure is a white-noise proxy, not a CDPP",
     ]
     if cross_match["result"] == "no_exact_match":
@@ -48,6 +54,8 @@ def build_manifest(
 
     return {
         "schema_version": "1.1",
+        "claimant_address": claimant_address,
+        "researcher_address": researcher_address,
         "claim_type": "celestial_object_evidence",
         "policy_version": "celestial-v1",
         "target": {
@@ -62,7 +70,10 @@ def build_manifest(
         },
         "analysis": {
             "git_commit": git_commit,
-            "container_digest": "local-dev",
+            "container_digest": "",
+            "environment_sha256": environment_sha256,
+            "environment_uri": f"/v1/artifacts/{environment_sha256}",
+            "parameters": {"period_min_days": 0.7, "period_max_days": 12.0, "n_periods": 700},
             "pipeline": "bls-numpy-v1",
             "pipeline_version": "1",
         },
@@ -71,7 +82,9 @@ def build_manifest(
                 "name": "period",
                 "value": round(fit["period_days"], 6),
                 "unit": "d",
-                "uncertainty": round(fit["period_uncertainty_days"], 6),
+                "uncertainty": fit.get("period_uncertainty_days"),
+                "uncertainty_method": "residual_bootstrap_white_noise_v1" if fit.get("period_uncertainty_days") is not None else "unavailable",
+                "grid_resolution_days": fit.get("period_resolution_days"),
             },
             {
                 "name": "depth",
@@ -95,7 +108,7 @@ def build_manifest(
         "artifacts": [
             {
                 "sha256": series_sha256,
-                "uri": f"local://analyses/{analysis_id}/series",
+                "uri": f"/v1/artifacts/{series_sha256}",
                 "kind": "light_curve",
             }
         ],
@@ -104,10 +117,13 @@ def build_manifest(
                 "catalogue": cross_match["catalogue"],
                 "result": cross_match["result"],
                 "query_snapshot_sha256": snapshot_sha256,
+                "uri": f"/v1/artifacts/{snapshot_sha256}",
                 "live_query": bool(cross_match.get("live_query")),
             }
         ],
         "false_positive_tests": ["odd_even", "secondary_eclipse"],
+        "diagnostics": diagnostics or [],
+        "quality_flags": quality_flags or [],
         "limitations": limitations,
         "scientific_status": science,
     }

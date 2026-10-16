@@ -19,6 +19,7 @@ MAST_DOWNLOAD = "https://mast.stsci.edu/api/v0.1/Download/file?uri="
 USER_AGENT = "DeepSight/0.1 (local research workspace)"
 # Longer cadences first so a sector stays a few megabytes.
 EXPOSURE_PREFERENCE = (120, 200, 600, 1800, 20)
+MAX_LIGHT_CURVE_BYTES = 64 * 1024 * 1024
 
 
 class MastError(Exception):
@@ -176,10 +177,17 @@ def _download(uri: str, path: Path) -> None:
             follow_redirects=True,
         ) as response:
             response.raise_for_status()
+            total = 0
             with temporary.open("wb") as handle:
                 for chunk in response.iter_bytes():
+                    total += len(chunk)
+                    if total > MAX_LIGHT_CURVE_BYTES:
+                        raise MastError("MAST light curve exceeds the allowed size.", 413)
                     handle.write(chunk)
         temporary.replace(path)
     except httpx.HTTPError as exc:
         temporary.unlink(missing_ok=True)
         raise MastError("MAST did not finish the light-curve download.") from exc
+    except MastError:
+        temporary.unlink(missing_ok=True)
+        raise

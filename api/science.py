@@ -22,6 +22,7 @@ class TransitFit:
     depth: float
     snr_proxy: float
     period_uncertainty_days: float
+    bootstrap_uncertainty_days: float | None
     odd_even_delta: float
     secondary_depth: float
     n_in_transit: int
@@ -90,6 +91,7 @@ def fit_transit(
     odd_even_delta, _odd, _even = _odd_even(elapsed, flux, period, t0, duration, baseline)
     secondary = _secondary_depth(elapsed, flux, period, t0, duration, baseline)
     step = float(periods[1] - periods[0]) if n_periods > 1 else period
+    uncertainty = _bootstrap_period_uncertainty(elapsed, flux, period, t0, duration, depth, period_min, period_max, step, fractions)
     keep = np.linspace(0, n_periods - 1, min(160, n_periods)).astype(int)
     return TransitFit(
         period_days=period,
@@ -98,12 +100,35 @@ def fit_transit(
         depth=depth,
         snr_proxy=float(snr),
         period_uncertainty_days=step,
+        bootstrap_uncertainty_days=uncertainty,
         odd_even_delta=odd_even_delta,
         secondary_depth=secondary,
         n_in_transit=count_in,
         periodogram_period=[round(float(periods[i]), 5) for i in keep],
         periodogram_power=[round(float(powers[i]), 8) for i in keep],
     )
+
+
+def _bootstrap_period_uncertainty(time, flux, period, t0, duration, depth, lower, upper, step, fractions):
+    """Conditional white-noise bootstrap; it does not account for systematics or aliases."""
+    if period <= lower + step or period >= upper - step or depth <= 0:
+        return None
+    phase = np.mod(time - t0, period)
+    transit = (phase <= duration / 2) | (phase >= period - duration / 2)
+    model = np.full(flux.size, float(np.median(flux)))
+    model[transit] -= depth
+    residuals = flux - model
+    window = max(8 * step, period * 0.015)
+    trials = np.linspace(max(lower, period - window), min(upper, period + window), 81)
+    rng = np.random.default_rng(1408)
+    recovered = []
+    for _ in range(12):
+        sample = model + rng.choice(residuals, size=residuals.size, replace=True)
+        centered = sample - float(np.median(sample))
+        scores = [_best_box(time, centered, float(candidate), fractions)[0] for candidate in trials]
+        recovered.append(float(trials[int(np.argmax(scores))]))
+    spread = float(np.std(recovered, ddof=1))
+    return max(spread, float(trials[1] - trials[0]))
 
 
 def fold(time: np.ndarray, flux: np.ndarray, period: float, t0: float, bins: int = 60) -> dict:

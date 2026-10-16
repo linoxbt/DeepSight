@@ -42,6 +42,9 @@ def test_analysis_claim_and_review_keep_science_unconfirmed():
     claim_id = claim.json()["id"]
     assert claim.json()["scientific_status"] == "unconfirmed_candidate"
     assert claim.json()["chain_status"] == "not_submitted"
+    public_record = next(row for row in client.get("/v1/claims").json()["claims"] if row["id"] == claim_id)
+    assert public_record["target_name"] == analysis["target"]["id"]
+    assert public_record["summary_metrics"]["period_days"]["value"] == claim.json()["summary_metrics"]["period_days"]["value"]
 
     reviewed = client.post(f"/v1/claims/{claim_id}/review-request")
     assert reviewed.status_code == 200
