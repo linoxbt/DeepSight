@@ -2,7 +2,7 @@ import { test, expect } from "@playwright/test";
 
 test("workspace navigation, sign-in boundary, and queued analysis", async ({ page }) => {
   let authenticated = false;
-  await page.route("**/api/auth/session", async route => route.fulfill({ status: authenticated ? 200 : 401,
+  await page.route("**/v1/auth/session", async route => route.fulfill({ status: authenticated ? 200 : 401,
     json: authenticated ? { address: "0x1111111111111111111111111111111111111111" } : { detail: "Sign in with your wallet to continue" } }));
   await page.route("**/v1/targets", route => route.fulfill({ json: { targets: [{ id: "DS-SYN-001", name: "Calibration", summary: "Synthetic calibration", ra_deg: 10, dec_deg: -20, synthetic: true, observation_id: "synthetic" }] } }));
   await page.route("**/v1/jobs", route => route.fulfill({ status: authenticated ? 202 : 401, json: authenticated ? { id: "job_browser", status: "queued" } : { detail: "Sign in with your wallet to continue" } }));
@@ -27,11 +27,12 @@ test("workspace navigation, sign-in boundary, and queued analysis", async ({ pag
 });
 
 test("claim page separates local policy and chain outcome and offers exact downloads", async ({ page }) => {
-  await page.route("**/api/auth/session", route => route.fulfill({ status: 401, json: { detail: "Sign in" } }));
+  await page.route("**/v1/auth/session", route => route.fulfill({ status: 401, json: { detail: "Sign in" } }));
   await page.route("**/v1/claims/clm_browser", route => route.fulfill({ json: { id: "clm_browser", owner: "0x1111111111111111111111111111111111111111", status: "FINALIZED", protocol_result: "EVIDENCE_SUFFICIENT", rationale: "Local preview", scientific_status: "unconfirmed_candidate", scientific_confirmation: false, manifest_hash: "a".repeat(64), chain_status: "ACCEPTED", chain_note: "Provisional", chain_claim_id: "pod-1", chain_tx: "", chain_protocol_result: "", chain_execution: "SUCCESS", target_id: "TIC-1", policy_version: "celestial-v1", manifest: { archive: { name: "MAST" }, limitations: ["Not confirmed"], metrics: [] } } }));
   await page.route("**/v1/claims/clm_browser/timeline", route => route.fulfill({ json: { events: [] } }));
   await page.route("**/v1/claims/clm_browser/finality", route => route.fulfill({ json: { reason: "Awaiting finality" } }));
   await page.route("**/v1/claims/clm_browser/operations", route => route.fulfill({ json: { operations: [] } }));
+  await page.route("**/v1/research/attestations?claim_id=clm_browser", route => route.fulfill({ json: { attestations: [] } }));
   await page.goto("/claims/clm_browser");
   await expect(page.getByRole("heading", { name: "Local policy preview" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Chain evidence decision" })).toBeVisible();
@@ -41,7 +42,7 @@ test("claim page separates local policy and chain outcome and offers exact downl
 });
 
 test("saved research runs link back to their completed analysis", async ({ page }) => {
-  await page.route("**/api/auth/session", route => route.fulfill({ status: 401, json: { detail: "Sign in" } }));
+  await page.route("**/v1/auth/session", route => route.fulfill({ status: 401, json: { detail: "Sign in" } }));
   await page.route("**/v1/jobs", route => route.fulfill({ json: { jobs: [{ id: "job_saved", kind: "analysis", status: "succeeded", error: "", created: 1700000000, href: "/lab?analysis=an_saved" }] } }));
   await page.goto("/jobs");
   await expect(page.getByRole("heading", { name: "Research runs" })).toBeVisible();

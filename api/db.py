@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from sqlalchemy import Integer, String, Text, create_engine, inspect, text
+from sqlalchemy import Boolean, Integer, String, Text, UniqueConstraint, create_engine, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
@@ -96,10 +96,27 @@ class ClaimEventRow(Base):
     observed_at: Mapped[str] = mapped_column(String)
 
 
+class AttestationRow(Base):
+    __tablename__ = "attestations"
+    __table_args__ = (UniqueConstraint("claim_id", "reviewer", name="uq_attestation_claim_reviewer"),)
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    claim_id: Mapped[str] = mapped_column(String, index=True)
+    manifest_hash: Mapped[str] = mapped_column(String)
+    reviewer: Mapped[str] = mapped_column(String)
+    decision: Mapped[str] = mapped_column(String)
+    note: Mapped[str] = mapped_column(Text)
+    conflict_disclosure: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[str] = mapped_column(String)
+
+
 def init_db() -> None:
     Base.metadata.create_all(engine)
     _ensure_claim_columns()
     with engine.begin() as connection:
+        artifact_columns = {col["name"] for col in inspect(connection).get_columns("artifacts")}
+        if "public" not in artifact_columns:
+            connection.exec_driver_sql("ALTER TABLE artifacts ADD COLUMN public BOOLEAN NOT NULL DEFAULT 1")
         for table in ("analyses", "radio_analyses"):
             columns = {col["name"] for col in inspect(connection).get_columns(table)}
             if "owner" not in columns:
@@ -155,11 +172,27 @@ class JobRow(Base):
     updated: Mapped[int] = mapped_column(Integer)
 
 
+class RateLimitRow(Base):
+    __tablename__ = "rate_limits"
+    key: Mapped[str] = mapped_column(String, primary_key=True)
+    count: Mapped[int] = mapped_column(Integer, default=0)
+    expires: Mapped[int] = mapped_column(Integer, index=True)
+
+
 class ArtifactRow(Base):
     __tablename__ = "artifacts"
     digest: Mapped[str] = mapped_column(String, primary_key=True)
     content: Mapped[str] = mapped_column(Text)
     media_type: Mapped[str] = mapped_column(String, default="application/json")
+    public: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class ArtifactOwnerRow(Base):
+    __tablename__ = "artifact_owners"
+    __table_args__ = (UniqueConstraint("digest", "owner", name="uq_artifact_owner"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    digest: Mapped[str] = mapped_column(String, index=True)
+    owner: Mapped[str] = mapped_column(String, index=True)
 
 
 class ChainIntent(Base):

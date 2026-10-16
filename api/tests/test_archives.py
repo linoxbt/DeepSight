@@ -1,6 +1,6 @@
 import os
 
-from api.archives import query_horizons, resolve_cross_match
+from api.archives import _match_rows, query_horizons, resolve_cross_match
 
 
 def test_cross_match_uses_live_tap_rows(monkeypatch):
@@ -33,7 +33,6 @@ def test_cross_match_falls_back_when_tap_fails(monkeypatch):
     try:
         def explode(**_kwargs):
             from api.archives import ArchiveError
-
             raise ArchiveError("down")
 
         monkeypatch.setattr("api.archives.fetch_planets", explode)
@@ -42,6 +41,13 @@ def test_cross_match_falls_back_when_tap_fails(monkeypatch):
         assert "local extract" in match["note"]
     finally:
         os.environ["DEEPSIGHT_LIVE_TAP"] = "0"
+
+
+def test_coordinate_fallback_does_not_turn_neighbor_into_known_object():
+    rows = [{"name": "Neighbor b", "hostname": "Neighbor", "tic_id": "TIC 999",
+             "host_tic": "999", "period_days": 2.5}]
+    match = _match_rows(rows, "TIC-123", 2.5, "123", queried_by_id=True)
+    assert match["result"] == "period_coincidence"
 
 
 def test_horizons_reports_a_miss():

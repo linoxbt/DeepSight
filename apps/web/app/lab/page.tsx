@@ -45,6 +45,7 @@ export default function LabPage() {
   const [analysis, setAnalysis] = useState<Analysis | null>(null);
   const [error, setError] = useState("");
   const [running, setRunning] = useState(false);
+  const [progress, setProgress] = useState("");
 
   useEffect(() => {
     const query = new URLSearchParams(window.location.search);
@@ -65,14 +66,16 @@ export default function LabPage() {
 
   async function run() {
     setRunning(true);
+    setProgress("Starting analysis");
     setError("");
     setAnalysis(null);
     try {
-      setAnalysis(await runJob("analysis", { target_id: selected }));
+      setAnalysis(await runJob("analysis", { target_id: selected }, setProgress));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "The transit search failed.");
     } finally {
       setRunning(false);
+      setProgress("");
     }
   }
 
@@ -91,6 +94,7 @@ export default function LabPage() {
         </button>
       </header>
       {error ? <p className="callout fail">{error}</p> : null}
+      {running && progress ? <p role="status" className="callout">{progress}…</p> : null}
       <button className="ghost" disabled={running} onClick={async () => {
         const id = sessionStorage.getItem("deepsight-job");
         if (!id) { setError("No unfinished job in this browser."); return; }
@@ -180,6 +184,7 @@ export default function LabPage() {
             {analysis ? (
               <div className="metrics">
                 <Metric label="Period" value={`${analysis.metrics.period_days} d`} />
+                <Metric label="Period uncertainty" value={analysis.metrics.period_uncertainty_days == null ? "Unavailable; review required" : `±${analysis.metrics.period_uncertainty_days} d (conditional white-noise bootstrap)`} />
                 <Metric label="Period grid resolution" value={`${analysis.metrics.period_resolution_days} d (not uncertainty)`} />
                 <Metric label="Depth" value={analysis.metrics.depth.toFixed(5)} />
                 <Metric label="Duration" value={`${analysis.metrics.duration_days} d`} />

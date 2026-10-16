@@ -1,7 +1,7 @@
 "use client";
 
 import { useParams } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ChainAction } from "@/components/ChainAction";
 import { api } from "@/lib/api";
 import { Shell } from "@/components/Shell";
@@ -32,6 +32,7 @@ type Claim = {
 };
 
 type Event = { status: string; note: string; observed_at: string };
+type Attestation = { id: string; reviewer: string; decision: string; note: string; conflict_disclosure: string; manifest_hash: string; created_at: string };
 
 export default function ClaimDetailPage() {
   const params = useParams<{ id: string }>();
@@ -43,26 +44,30 @@ export default function ClaimDetailPage() {
   const [reason, setReason] = useState("");
   const [viewer, setViewer] = useState("");
   const [operations, setOperations] = useState<{ id: string; action: string; stage: string; status: string; error: string; tx_hash: string }[]>([]);
+  const [attestations, setAttestations] = useState<Attestation[]>([]);
+  const refreshSeq = useRef(0);
   const owns = !!viewer && viewer === claim?.owner;
 
   async function load() {
-    const ops = await api(`/v1/claims/${params.id}/operations`);
-    setOperations(ops.operations);
-    const session = await api("/api/auth/session").catch(() => ({ address: "" }));
-    setViewer(session.address);
-    const [claimResponse, timelineResponse, finalityResponse] = await Promise.all([
-      fetch(`/v1/claims/${params.id}`),
-      fetch(`/v1/claims/${params.id}/timeline`),
-      fetch(`/v1/claims/${params.id}/finality`),
+    const sequence = ++refreshSeq.current;
+    const record = await api<Claim>(`/v1/claims/${params.id}`);
+    if (sequence !== refreshSeq.current) return;
+    setClaim(record);
+    setError("");
+    const [ops, viewerSession, timeline, finalityResult, reviews] = await Promise.allSettled([
+      api<{ operations: typeof operations }>(`/v1/claims/${params.id}/operations`),
+      api<{ address: string }>("/v1/auth/session"),
+      api<{ events: Event[] }>(`/v1/claims/${params.id}/timeline`),
+      api<{ reason: string }>(`/v1/claims/${params.id}/finality`),
+      api<{ attestations: Attestation[] }>(`/v1/research/attestations?claim_id=${encodeURIComponent(params.id)}`),
     ]);
-    if (!claimResponse.ok) {
-      setError("Claim not found.");
-      return;
-    }
-    setClaim(await claimResponse.json());
-    setEvents((await timelineResponse.json()).events);
-    const final = await finalityResponse.json();
-    setFinality(final.reason);
+    if (sequence !== refreshSeq.current) return;
+    if (ops.status === "fulfilled") setOperations(ops.value.operations);
+    setViewer(viewerSession.status === "fulfilled" ? viewerSession.value.address : "");
+    if (timeline.status === "fulfilled") setEvents(timeline.value.events);
+    if (finalityResult.status === "fulfilled") setFinality(finalityResult.value.reason);
+    if (reviews.status === "fulfilled") setAttestations(reviews.value.attestations);
+    if ([ops, timeline, finalityResult, reviews].some(result => result.status === "rejected")) setError("Some claim details could not be loaded. Refresh to retry.");
   }
 
   useEffect(() => {
@@ -70,7 +75,7 @@ export default function ClaimDetailPage() {
     refresh();
     const timer = setInterval(refresh, 5000);
     window.addEventListener("deepsight-auth", refresh);
-    return () => { clearInterval(timer); window.removeEventListener("deepsight-auth", refresh); };
+    return () => { ++refreshSeq.current; clearInterval(timer); window.removeEventListener("deepsight-auth", refresh); };
   }, [params.id]);
 
   async function act(path: string, body?: unknown) {
@@ -186,6 +191,7 @@ export default function ClaimDetailPage() {
             </section>
           ) : null}
           <section className="stack">
+            {attestations.length > 0 ? <section className="panel"><h2>Independent attestations</h2>{attestations.map(item => <article key={item.id} className="event"><strong>{item.decision.replaceAll("_", " ")}</strong><p>{item.note}</p><p className="fine muted">Reviewer {item.reviewer} · Conflict disclosure: {item.conflict_disclosure} · {item.created_at}</p><p className="hash mono">Manifest {item.manifest_hash}</p></article>)}</section> : null}
             {events.map((event) => (
               <article key={event.observed_at + event.status} className="event">
                 <strong>{event.status}</strong>

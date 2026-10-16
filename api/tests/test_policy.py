@@ -7,13 +7,15 @@ from api.policy import RESULT_INSUFFICIENT, RESULT_REVIEW, RESULT_SUFFICIENT, ev
 def _base() -> dict:
     return {
         "schema_version": "1.1",
+        "claimant_address": "0x" + "1" * 40,
+        "researcher_address": "0x" + "2" * 40,
         "claim_type": "celestial_object_evidence",
         "policy_version": "celestial-v1",
         "target": {"id": "TIC-1", "ra_deg": 10.0, "dec_deg": -20.0},
         "archive": {"name": "MAST", "observation_ids": ["obs-1"]},
         "analysis": {"git_commit": "abc", "container_digest": "sha256:" + "d" * 64},
         "metrics": [
-            {"name": "period", "value": 2.5, "unit": "d"},
+            {"name": "period", "value": 2.5, "unit": "d", "uncertainty": 0.01, "uncertainty_method": "residual_bootstrap_white_noise_v1"},
             {"name": "depth", "value": 0.01, "unit": "relative_flux"},
         ],
         "artifacts": [{"sha256": "a" * 64, "uri": "s3://evidence/curve"}],
@@ -62,6 +64,8 @@ def test_missing_artifact_is_insufficient():
 def test_radio_without_off_target_needs_review():
     document = {
         "schema_version": "1.1",
+        "claimant_address": "0x" + "1" * 40,
+        "researcher_address": "0x" + "2" * 40,
         "claim_type": "radio_signal_integrity",
         "policy_version": "signal-v1",
         "scientific_status": "inconclusive",

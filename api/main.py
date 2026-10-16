@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 import numpy as np
-from fastapi import FastAPI, HTTPException, Depends, Response
+from fastapi import FastAPI, HTTPException, Depends, Response, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -27,8 +27,9 @@ from api.archives import ArchiveError, query_gaia, query_horizons, resolve_cross
 from api.catalogue import CATALOGUE_VERSION, REFERENCE_CATALOGUE
 from api import chain, evidence
 from api.auth import router as auth_router, current_user, require_owner, require_reviewer, origin
-from api.db import AnalysisRow, ClaimEventRow, ClaimRow, DatasetRow, RadioAnalysisRow, SessionLocal, init_db
+from api.db import AnalysisRow, AttestationRow, ClaimEventRow, ClaimRow, DatasetRow, RadioAnalysisRow, SessionLocal, init_db
 from api.manifest import build_manifest, canonicalize, sha256_text
+from api.limits import rate_limit
 from api.mast import MastError, fetch_tess_light_curve, normalize_tic
 from api.policy import POLICY_CELESTIAL, RESULT_REVIEW, evaluate
 from api.radio import analyze_tutorial, build_radio_manifest, search_catalog
@@ -113,6 +114,8 @@ class ChallengeIn(BaseModel):
 
 class ReviewNoteIn(BaseModel):
     note: str = Field(min_length=8, max_length=500)
+    decision: str = Field(pattern="^(supports_evidence|requests_revision|inconclusive)$")
+    conflict_disclosure: str = Field(min_length=4, max_length=500)
 
 
 class AppealIn(BaseModel):
@@ -233,6 +236,7 @@ def health() -> dict[str, Any]:
         "pipeline": PIPELINE_NAME,
         "pipeline_version": PIPELINE_VERSION,
         "live_archive": True,
+        "archive_reachability": "unverified",
         "mast_light_curve_import": True,
         "exoplanet_tap": True,
         "gaia": True,
@@ -248,14 +252,15 @@ def health() -> dict[str, Any]:
 def sources() -> dict[str, Any]:
     return {
         "live_archive": True,
+        "archive_reachability": "unverified",
         "sources": [
             {"id": "local-synthetic", "name": "DeepSight synthetic calibration", "connected": True},
-            {"id": "mast", "name": "STScI MAST — one TESS sector light curve", "connected": True},
-            {"id": "exoplanet-archive", "name": "NASA Exoplanet Archive TAP (pscomppars)", "connected": True},
-            {"id": "gaia", "name": "ESA Gaia DR3 TAP", "connected": True},
-            {"id": "jpl", "name": "JPL Horizons", "connected": True},
-            {"id": "breakthrough-listen", "name": "Breakthrough Listen open-data catalog", "connected": True},
-            {"id": "genlayer", "name": "GenLayer StudioNet", "connected": chain.configured()},
+            {"id": "mast", "name": "STScI MAST — one TESS sector light curve", "connected": None},
+            {"id": "exoplanet-archive", "name": "NASA Exoplanet Archive TAP (pscomppars)", "connected": None},
+            {"id": "gaia", "name": "ESA Gaia DR3 TAP", "connected": None},
+            {"id": "jpl", "name": "JPL Horizons", "connected": None},
+            {"id": "breakthrough-listen", "name": "Breakthrough Listen open-data catalog", "connected": None},
+            {"id": "genlayer", "name": "GenLayer StudioNet", "connected": None if chain.configured() else False},
         ],
     }
 
@@ -371,8 +376,8 @@ def _load_curve(target_id: str) -> tuple[dict[str, Any], np.ndarray, np.ndarray]
 def create_analysis(body: AnalysisIn, user: str = Depends(current_user)) -> dict[str, Any]:
     target, time, flux = _load_curve(body.target_id)
     series = {"time_days": time.tolist(), "flux": flux.tolist()}
-    series_sha = evidence.put_json(series)
-    environment_sha = evidence.put_json(evidence.environment())
+    series_sha = evidence.put_json(series, owner=user)
+    environment_sha = evidence.put_json(evidence.environment(), owner=user)
     fit = fit_transit(time, flux)
     match = resolve_cross_match(
         target["id"],
@@ -396,7 +401,7 @@ def create_analysis(body: AnalysisIn, user: str = Depends(current_user)) -> dict
                 "catalogue_version": match.get("catalogue_version", CATALOGUE_VERSION),
                 "rows": snapshot_rows,
                 "query": {"target_id": target["id"], "period_days": round(fit.period_days, 6)},
-            }
+            }, owner=user
     )
     match = {**match, "query_snapshot_sha256": snapshot}
     folded = fold(time, flux, fit.period_days, fit.t0_days)
@@ -406,7 +411,7 @@ def create_analysis(body: AnalysisIn, user: str = Depends(current_user)) -> dict
         "pipeline": {"name": PIPELINE_NAME, "version": PIPELINE_VERSION, "git_commit": _git_commit(), "environment_sha256": environment_sha},
         "metrics": {
             "period_days": round(fit.period_days, 6),
-            "period_uncertainty_days": None,
+            "period_uncertainty_days": None if fit.bootstrap_uncertainty_days is None else round(fit.bootstrap_uncertainty_days, 6),
             "period_resolution_days": round(fit.period_uncertainty_days, 6),
             "t0_days": round(fit.t0_days, 6),
             "duration_days": round(fit.duration_days, 6),
@@ -452,28 +457,33 @@ def create_analysis(body: AnalysisIn, user: str = Depends(current_user)) -> dict
 
 
 @app.get("/v1/analyses/{analysis_id}")
-def read_analysis(analysis_id: str) -> dict[str, Any]:
+def read_analysis(analysis_id: str, user: str = Depends(current_user)) -> dict[str, Any]:
     with SessionLocal() as session:
         row = _analysis_or_404(session, analysis_id)
+        require_owner(row, user)
         payload = json.loads(row.payload_json)
     return {"id": row.id, "series_sha256": row.series_sha256, "created_at": row.created_at, **payload}
 
 
 @app.post("/v1/evidence/preflight")
-def preflight(body: ClaimIn) -> dict[str, Any]:
+def preflight(body: ClaimIn, user: str = Depends(current_user)) -> dict[str, Any]:
     with SessionLocal() as session:
         row = _analysis_or_404(session, body.analysis_id)
+        require_owner(row, user)
         payload = json.loads(row.payload_json)
         manifest = build_manifest(
             target=payload["target"],
             fit=payload["metrics"],
             series_sha256=row.series_sha256,
             analysis_id=row.id,
+            claimant_address=os.environ.get("DEEPSIGHT_RELAY_ADDRESS", user).lower(),
+            researcher_address=user,
             cross_match=payload["cross_match"],
             snapshot_sha256=payload["cross_match"]["query_snapshot_sha256"],
             git_commit=payload["pipeline"]["git_commit"],
             environment_sha256=payload["pipeline"].get("environment_sha256", ""),
             diagnostics=payload["false_positive_tests"],
+            quality_flags=payload["quality_flags"],
         )
     items = _checklist(manifest, payload)
     blockers = [item for item in items if item["status"] == "fail"]
@@ -501,11 +511,14 @@ def create_claim(body: ClaimIn, user: str = Depends(current_user)) -> dict[str, 
             fit=payload["metrics"],
             series_sha256=analysis.series_sha256,
             analysis_id=analysis.id,
+            claimant_address=os.environ.get("DEEPSIGHT_RELAY_ADDRESS", user).lower(),
+            researcher_address=user,
             cross_match=payload["cross_match"],
             snapshot_sha256=payload["cross_match"]["query_snapshot_sha256"],
             git_commit=payload["pipeline"]["git_commit"],
             environment_sha256=payload["pipeline"].get("environment_sha256", ""),
             diagnostics=payload["false_positive_tests"],
+            quality_flags=payload["quality_flags"],
         )
         checklist = _checklist(manifest, payload)
         if any(item["status"] == "fail" for item in checklist):
@@ -527,6 +540,7 @@ def create_claim(body: ClaimIn, user: str = Depends(current_user)) -> dict[str, 
             updated_at=now,
         )
         session.add(claim)
+        evidence.publish_manifest(session, manifest)
         _add_event(session, claim.id, "EVIDENCE_READY", "Canonical manifest stored locally. Not submitted to GenLayer.")
         session.commit()
         session.refresh(claim)
@@ -544,7 +558,7 @@ def review_claim(claim_id: str, user: str = Depends(current_user)) -> dict[str, 
         if claim.status != "EVIDENCE_READY":
             raise HTTPException(status_code=409, detail=f"Cannot review a claim in status {claim.status}")
         manifest = json.loads(claim.manifest_json)
-        result, rationale = evaluate(claim.manifest_json, manifest["claim_type"], manifest["policy_version"])
+        result, rationale = evaluate(claim.manifest_json, manifest["claim_type"], manifest["policy_version"], manifest["target"]["id"])
         claim.protocol_result = result
         claim.rationale = rationale
         claim.status = "NEEDS_REVIEW" if result == RESULT_REVIEW else "FINALIZED"
@@ -665,10 +679,11 @@ def discoveries() -> dict[str, Any]:
         rows = session.scalars(select(ClaimRow).order_by(ClaimRow.created_at.desc())).all()
         published = []
         for row in rows:
-            result = row.chain_protocol_result if row.chain_claim_id else row.protocol_result
-            if result != "EVIDENCE_SUFFICIENT" or row.status != "FINALIZED":
-                continue
-            if row.chain_claim_id and (row.chain_status != "FINALIZED" or row.chain_execution != "SUCCESS"):
+            if (row.chain_protocol_result != "EVIDENCE_SUFFICIENT"
+                    or row.status != "FINALIZED"
+                    or not row.chain_claim_id
+                    or row.chain_status != "FINALIZED"
+                    or row.chain_execution != "SUCCESS"):
                 continue
             item = _claim_out(row)
             item["headline"] = (
@@ -676,13 +691,14 @@ def discoveries() -> dict[str, Any]:
             )
             published.append(item)
         return {
-            "note": "Listings distinguish local policy previews from finalized chain evidence decisions. Neither confirms a planet or signal.",
+            "note": "Only finalized on-chain evidence decisions appear here. They do not confirm a planet or signal.",
             "discoveries": published,
         }
 
 
 @app.post("/v1/archives/tap")
-def archive_tap(body: TapIn) -> dict[str, Any]:
+def archive_tap(body: TapIn, request: Request) -> dict[str, Any]:
+    rate_limit(request, "archives", 30)
     from api.archives import fetch_planets
 
     try:
@@ -704,7 +720,8 @@ def archive_tap(body: TapIn) -> dict[str, Any]:
 
 
 @app.post("/v1/archives/gaia")
-def archive_gaia(body: GaiaIn) -> dict[str, Any]:
+def archive_gaia(body: GaiaIn, request: Request) -> dict[str, Any]:
+    rate_limit(request, "archives", 30)
     try:
         return query_gaia(body.ra_deg, body.dec_deg, body.radius_arcsec)
     except ArchiveError as exc:
@@ -712,7 +729,8 @@ def archive_gaia(body: GaiaIn) -> dict[str, Any]:
 
 
 @app.post("/v1/archives/horizons")
-def archive_horizons(body: HorizonsIn) -> dict[str, Any]:
+def archive_horizons(body: HorizonsIn, request: Request) -> dict[str, Any]:
+    rate_limit(request, "archives", 30)
     try:
         return query_horizons(body.command)
     except ArchiveError as exc:
@@ -720,7 +738,8 @@ def archive_horizons(body: HorizonsIn) -> dict[str, Any]:
 
 
 @app.post("/v1/radio/catalog")
-def radio_catalog(body: RadioSearchIn) -> dict[str, Any]:
+def radio_catalog(body: RadioSearchIn, request: Request) -> dict[str, Any]:
+    rate_limit(request, "radio-catalog", 20)
     try:
         return search_catalog(body.target)
     except ArchiveError as exc:
@@ -733,8 +752,8 @@ def radio_analyze(user: str = Depends(current_user)) -> dict[str, Any]:
         result = analyze_tutorial(_radio_cache())
     except ArchiveError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
-    result["environment_sha256"] = evidence.put_json(evidence.environment())
-    result["report_sha256"] = evidence.put_json(result)
+    result["environment_sha256"] = evidence.put_json(evidence.environment(), owner=user)
+    result["report_sha256"] = evidence.put_json(result, owner=user)
     analysis_id = "rad_" + uuid.uuid4().hex[:12]
     record = RadioAnalysisRow(
         id=analysis_id,
@@ -773,7 +792,7 @@ def create_radio_claim(body: ClaimIn, user: str = Depends(current_user)) -> dict
             raise HTTPException(status_code=404, detail="Radio analysis not found")
         require_owner(row, user)
         result = json.loads(row.payload_json)
-        built = build_radio_manifest(result, analysis_id=row.id, git_commit=_git_commit())
+        built = build_radio_manifest(result, analysis_id=row.id, git_commit=_git_commit(), claimant_address=os.environ.get("DEEPSIGHT_RELAY_ADDRESS", user).lower(), researcher_address=user)
         text = built["text"]
         digest = built["sha256"]
         existing = session.scalar(select(ClaimRow).where(ClaimRow.manifest_hash == digest))
@@ -791,6 +810,7 @@ def create_radio_claim(body: ClaimIn, user: str = Depends(current_user)) -> dict
             updated_at=now,
         )
         session.add(claim)
+        evidence.publish_manifest(session, built["document"])
         _add_event(
             session,
             claim.id,
@@ -806,7 +826,8 @@ def create_radio_claim(body: ClaimIn, user: str = Depends(current_user)) -> dict
 def review_queue() -> dict[str, Any]:
     with SessionLocal() as session:
         rows = session.scalars(select(ClaimRow).order_by(ClaimRow.updated_at.desc())).all()
-        queued = [_claim_out(row) for row in rows if row.status == "NEEDS_REVIEW"]
+        reviewed_ids = set(session.scalars(select(AttestationRow.claim_id)).all())
+        queued = [_claim_out(row) for row in rows if row.status == "NEEDS_REVIEW" and row.id not in reviewed_ids]
     return {
         "note": "Human review records a note. It does not change scientific status to confirmed.",
         "claims": queued,
@@ -820,10 +841,29 @@ def review_note(claim_id: str, body: ReviewNoteIn, user: str = Depends(current_u
         claim = _claim_or_404(session, claim_id)
         if claim.status != "NEEDS_REVIEW":
             raise HTTPException(status_code=409, detail="A review note is only attached to NEEDS_REVIEW claims")
-        _add_event(session, claim.id, "NEEDS_REVIEW", f"Human note: {body.note.strip()}")
+        if claim.owner == user:
+            raise HTTPException(status_code=403, detail="A claimant cannot attest to their own evidence")
+        session.add(AttestationRow(
+            id="att_" + uuid.uuid4().hex[:16], claim_id=claim.id, manifest_hash=claim.manifest_hash,
+            reviewer=user, decision=body.decision, note=body.note.strip(),
+            conflict_disclosure=body.conflict_disclosure.strip(), created_at=_now(),
+        ))
+        _add_event(session, claim.id, "HUMAN_REVIEW", f"Reviewer {user}: {body.decision}. {body.note.strip()}")
         session.commit()
         session.refresh(claim)
         return _claim_out(claim)
+
+
+@app.get("/v1/research/attestations")
+def attestations(claim_id: str) -> dict[str, Any]:
+    with SessionLocal() as session:
+        _claim_or_404(session, claim_id)
+        rows = session.scalars(select(AttestationRow).where(AttestationRow.claim_id == claim_id).order_by(AttestationRow.created_at)).all()
+        return {"claim_id": claim_id, "attestations": [
+            {"id": row.id, "manifest_hash": row.manifest_hash, "reviewer": row.reviewer,
+             "decision": row.decision, "note": row.note, "conflict_disclosure": row.conflict_disclosure,
+             "created_at": row.created_at} for row in rows
+        ]}
 
 
 @app.post("/v1/claims/{claim_id}/challenge")
@@ -927,12 +967,13 @@ def _checklist(manifest: dict[str, Any], payload: dict[str, Any]) -> list[dict[s
         _item("target", "Target identifier", True, manifest["target"]["id"]),
         _item("coordinates", "ICRS coordinates", True, f"{manifest['target']['ra_deg']}°, {manifest['target']['dec_deg']}°"),
         _item("observation", "Observation id", True, manifest["archive"]["observation_ids"][0]),
-        _item("period", "Period with uncertainty", "period" in metrics, "days"),
+        _item("period", "Period with uncertainty", isinstance(metrics.get("period", {}).get("uncertainty"), (int, float)) and metrics["period"]["uncertainty"] > 0, "Conditional white-noise bootstrap in days; rerun or inspect boundary periods if unavailable"),
         _item("depth", "Transit depth", "depth" in metrics, "relative flux"),
         _item("snr", "Signal-to-noise proxy", "snr_proxy" in metrics, "white-noise proxy, not CDPP"),
         _item("artifact", "Light-curve checksum", len(manifest["artifacts"][0]["sha256"]) == 64, manifest["artifacts"][0]["sha256"][:12] + "…"),
         _item("cross", "Catalogue snapshot", bool(manifest["cross_matches"][0]["query_snapshot_sha256"]), payload["cross_match"]["result"]),
-        _item("false_positives", "Odd-even and secondary tests", True, "documented"),
+        _item("false_positives", "Odd-even and secondary tests", {item.get("name") for item in payload.get("false_positive_tests", [])} >= {"odd_even", "secondary_eclipse"}, "documented"),
+        _item("quality", "Quality warnings", not any(flag.get("severity") == "warning" for flag in payload.get("quality_flags", [])), "Warnings require human review", warn_on_fail=True),
         _item("limitations", "Limitations recorded", len(manifest["limitations"]) > 0, "included in the manifest"),
         _item(
             "science",

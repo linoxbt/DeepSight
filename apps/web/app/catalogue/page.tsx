@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { Shell } from "@/components/Shell";
+import { api } from "@/lib/api";
 
 type Row = { name: string; host_tic: string; period_days: number; ra_deg: number; dec_deg: number };
 
@@ -11,11 +12,11 @@ export default function CataloguePage() {
   const [error, setError] = useState("");
 
   useEffect(() => {
-    fetch("/v1/catalogue")
-      .then((response) => response.json())
+    api("/v1/catalogue")
       .then((body) => {
+        if (!Array.isArray(body.rows)) throw new Error("Invalid catalogue response");
         setRows(body.rows);
-        setNote(body.note);
+        setNote(body.note || "");
       })
       .catch(() => setError("The catalogue extract is unavailable."));
   }, []);

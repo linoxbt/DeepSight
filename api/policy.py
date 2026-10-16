@@ -38,7 +38,7 @@ CONFIRMATION_CLAIMS = {
 }
 
 
-def evaluate(summary: str, claim_type: str, policy_version: str) -> tuple[str, str]:
+def evaluate(summary: str, claim_type: str, policy_version: str, target_id: str = "") -> tuple[str, str]:
     try:
         document = json.loads(summary)
     except json.JSONDecodeError:
@@ -54,6 +54,10 @@ def evaluate(summary: str, claim_type: str, policy_version: str) -> tuple[str, s
         blocking.append("policy_version does not match the registered claim")
     if document.get("schema_version") != "1.1":
         blocking.append("schema_version must be 1.1")
+    if not _valid_address(document.get("claimant_address")) or not _valid_address(document.get("researcher_address")):
+        blocking.append("claimant and researcher wallet addresses are required")
+    if target_id and (not isinstance(document.get("target"), dict) or document["target"].get("id") != target_id):
+        blocking.append("target.id does not match the registered target")
 
     status = str(document.get("scientific_status", "")).strip().lower()
     if status in CONFIRMATION_CLAIMS:
@@ -103,6 +107,8 @@ def _review_celestial(document: dict[str, Any], blocking: list[str], reasons: li
     _require_analysis(document, reasons)
     if not _has_metric(document, "period"):
         blocking.append("a period metric with a unit is required")
+    elif not _positive_uncertainty(document, "period"):
+        reasons.append("period uncertainty with a stated method is required")
     if not (_has_metric(document, "depth") or _has_metric(document, "snr") or _has_metric(document, "snr_proxy")):
         blocking.append("a depth or signal-to-noise metric is required")
     if not _has_artifact(document):
@@ -113,6 +119,9 @@ def _review_celestial(document: dict[str, Any], blocking: list[str], reasons: li
     names = tests if isinstance(tests, list) else []
     if "odd_even" not in names or "secondary_eclipse" not in names:
         reasons.append("odd-even and secondary-eclipse tests must both be documented")
+    flags = document.get("quality_flags")
+    if isinstance(flags, list) and any(isinstance(flag, dict) and flag.get("severity") in ("warning", "error") for flag in flags):
+        reasons.append("analysis quality warnings require independent human review")
 
 
 def _review_signal(document: dict[str, Any], blocking: list[str], reasons: list[str]) -> None:
@@ -193,6 +202,14 @@ def _has_artifact(document: dict[str, Any]) -> bool:
     return False
 
 
+def _positive_uncertainty(document: dict[str, Any], name: str) -> bool:
+    for metric in document.get("metrics", []):
+        if isinstance(metric, dict) and metric.get("name") == name:
+            pair = _ratio(metric.get("uncertainty"))
+            return bool(pair and pair[0] > 0 and str(metric.get("uncertainty_method", "")).strip())
+    return False
+
+
 def _ratio(value):
     if isinstance(value, bool) or value is None:
         return None
@@ -245,6 +262,11 @@ def _in_range(value, low: int, high: int, exclusive_high: bool = False) -> bool:
 def _valid_digest(value) -> bool:
     text = str(value)
     return len(text) == 64 and all(c in "0123456789abcdef" for c in text)
+
+
+def _valid_address(value) -> bool:
+    text = str(value).lower()
+    return len(text) == 42 and text.startswith("0x") and all(c in "0123456789abcdef" for c in text[2:])
 
 
 def _join(parts: list[str]) -> str:

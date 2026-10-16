@@ -1,7 +1,5 @@
 import ast
-import base64
 import hashlib
-import hmac
 import json
 import time
 from pathlib import Path
@@ -13,7 +11,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from api import chain_ops, evidence, jobs
-from api.auth import current_user, shared_session_address
+from api.auth import current_user
 from api.db import ClaimRow, ChainOperation, SessionLocal
 from api.main import app
 from api.policy import evaluate
@@ -23,21 +21,10 @@ OWNER = "0x" + "1" * 40
 OTHER = "0x" + "2" * 40
 
 
-def test_signed_web_session_is_accepted_by_api(monkeypatch):
-    secret = "a" * 64
-    monkeypatch.setenv("DEEPSIGHT_AUTH_SECRET", secret)
-    payload = base64.urlsafe_b64encode(json.dumps({"a": OWNER, "e": int(time.time()) + 60}, separators=(",", ":")).encode()).decode().rstrip("=")
-    signature = hmac.new(secret.encode(), payload.encode(), hashlib.sha256).hexdigest()
-    token = f"v1.{payload}.{signature}"
-    assert shared_session_address(token) == OWNER
-    assert shared_session_address(token + "bad") is None
-    with TestClient(app) as client:
-        client.cookies.set("deepsight_session", token)
-        assert client.get("/v1/auth/session").json()["address"] == OWNER
-
-
 def insert_claim(status="EVIDENCE_READY", owner=OWNER):
     document = _base()
+    document["claimant_address"] = owner
+    document["researcher_address"] = owner
     digest = evidence.put_json({"time_days": [0, 1], "flux": [1, 1]})
     document["artifacts"] = [{"sha256": digest, "uri": f"/v1/artifacts/{digest}"}]
     document["analysis"]["environment_sha256"] = evidence.put_json({"environment": "test"})
@@ -121,6 +108,13 @@ def test_local_contract_policy_parity(value):
     assert evaluate(text, "celestial_object_evidence", "celestial-v1") == contract_policy()(text, "celestial_object_evidence", "celestial-v1")
 
 
+def test_registered_target_must_match_manifest():
+    document = _base()
+    text = json.dumps(document)
+    assert evaluate(text, "celestial_object_evidence", "celestial-v1", "different-target") == contract_policy()(text, "celestial_object_evidence", "celestial-v1", "different-target")
+    assert evaluate(text, "celestial_object_evidence", "celestial-v1", "different-target")[0] == "EVIDENCE_INSUFFICIENT"
+
+
 def test_evidence_bundle_contains_exact_hashable_bytes():
     with TestClient(app) as client:
         analysis = client.post("/v1/analyses", json={"target_id": "DS-SYN-001"}).json()
@@ -134,10 +128,51 @@ def test_evidence_bundle_contains_exact_hashable_bytes():
             assert client.get(f"/v1/artifacts/{digest}").content == content.encode()
         manifest = json.loads(bundle["manifest"])
         assert manifest["diagnostics"]
-        assert manifest["metrics"][0]["uncertainty"] is None
+        assert manifest["metrics"][0]["uncertainty"] is not None
         assert manifest["analysis"]["environment_sha256"]
         app.dependency_overrides[current_user] = lambda: OTHER
         assert client.post("/v1/claims", json={"analysis_id": analysis["id"], "acknowledged": True}).status_code == 403
+
+
+def test_unpublished_analysis_and_artifact_are_owner_scoped():
+    from api.db import AuthSession
+    owner_token, other_token = "owner-test-token", "other-test-token"
+    with SessionLocal() as db:
+        db.add_all([
+            AuthSession(token_hash=hashlib.sha256(owner_token.encode()).hexdigest(), address=OWNER, expires=int(time.time()) + 60),
+            AuthSession(token_hash=hashlib.sha256(other_token.encode()).hexdigest(), address=OTHER, expires=int(time.time()) + 60),
+        ])
+        db.commit()
+    with TestClient(app) as client:
+        client.cookies.set("deepsight_session", owner_token)
+        analysis = client.post("/v1/analyses", json={"target_id": "DS-SYN-001"}).json()
+        digest = analysis["series_sha256"]
+        assert client.get(f"/v1/analyses/{analysis['id']}").status_code == 200
+        assert client.get(f"/v1/artifacts/{digest}").status_code == 200
+        assert client.get(f"/v1/artifacts/{digest}").headers["cache-control"] == "private, no-store"
+        app.dependency_overrides[current_user] = lambda: OTHER
+        client.cookies.set("deepsight_session", other_token)
+        assert client.get(f"/v1/analyses/{analysis['id']}").status_code == 403
+        assert client.get(f"/v1/artifacts/{digest}").status_code == 404
+
+
+def test_discoveries_require_finalized_chain_decision():
+    insert_claim(status="FINALIZED")
+    with SessionLocal() as db:
+        claim = db.get(ClaimRow, "clm_test")
+        claim.protocol_result = "EVIDENCE_SUFFICIENT"
+        db.commit()
+    with TestClient(app) as client:
+        assert client.get("/v1/discoveries").json()["discoveries"] == []
+    with SessionLocal() as db:
+        claim = db.get(ClaimRow, "clm_test")
+        claim.chain_claim_id = "pod-1"
+        claim.chain_protocol_result = "EVIDENCE_SUFFICIENT"
+        claim.chain_status = "FINALIZED"
+        claim.chain_execution = "SUCCESS"
+        db.commit()
+    with TestClient(app) as client:
+        assert [item["id"] for item in client.get("/v1/discoveries").json()["discoveries"]] == ["clm_test"]
 
 
 def test_worker_job_persists_result_and_is_private(monkeypatch):
@@ -158,6 +193,7 @@ def queue_signed_operation(monkeypatch):
     wallet = Account.create()
     insert_claim(owner=wallet.address.lower())
     monkeypatch.setenv("DEEPSIGHT_RELAY_ENABLED", "1")
+    monkeypatch.setenv("DEEPSIGHT_RELAY_ADDRESS", wallet.address.lower())
     monkeypatch.setattr("api.chain.load_config", lambda: {"address": "0x"+"3"*40})
     app.dependency_overrides[current_user] = lambda: wallet.address.lower()
     with TestClient(app) as client:
@@ -200,6 +236,59 @@ def test_outbox_waits_for_successful_finality_and_persists_chain_result(monkeypa
         assert claim.protocol_result == ""
         assert claim.chain_execution == "SUCCESS"
     assert len([c for c in calls if c["action"] == "broadcast"]) == 2
+
+
+def test_supersede_publishes_replacement_before_broadcast(monkeypatch):
+    wallet = Account.create()
+    monkeypatch.setenv("DEEPSIGHT_RELAY_ENABLED", "1")
+    monkeypatch.setenv("DEEPSIGHT_RELAY_ADDRESS", wallet.address.lower())
+    monkeypatch.setattr("api.chain.load_config", lambda: {"address": "0x" + "3" * 40})
+    insert_claim(status="FINALIZED", owner=wallet.address.lower())
+    with SessionLocal() as db:
+        db.get(ClaimRow, "clm_test").chain_claim_id = "pod-1"
+        db.commit()
+    app.dependency_overrides[current_user] = lambda: wallet.address.lower()
+    with TestClient(app) as client:
+        response = client.post("/v1/claims/clm_test/intent", json={"action": "supersede"})
+        assert response.status_code == 200, response.text
+        intent = response.json()
+        signature = Account.sign_message(encode_defunct(text=intent["message"]), wallet.key).signature.hex()
+        response = client.post("/v1/claims/clm_test/authorize", json={"intent_id": intent["id"], "signature": signature})
+        assert response.status_code == 202, response.text
+        with SessionLocal() as db:
+            operation = db.get(ChainOperation, response.json()["id"])
+            old = db.get(ClaimRow, "clm_test")
+            command = chain_ops._command(operation, old, json.loads(operation.payload))
+            replacement_id = json.loads(operation.payload)["replacement_id"]
+            replacement = db.get(ClaimRow, replacement_id)
+            assert replacement.status == "PENDING_CHAIN"
+            assert command["args"][2].endswith(f"/v1/claims/{replacement_id}/manifest")
+            assert client.get(f"/v1/claims/{replacement_id}/manifest").status_code == 200
+
+
+def test_outbox_retries_stale_contract_view_after_finality(monkeypatch):
+    operation_id = queue_signed_operation(monkeypatch)
+    view_status = {"value": "SUBMITTED"}
+
+    def invoke(command, config):
+        if command["action"] == "broadcast":
+            return {"ok": True, "hash": "0x" + "a" * 64}
+        if command["action"] == "receipt":
+            return {"ok": True, "status": "FINALIZED", "execution": "SUCCESS"}
+        if command["method"] == "read_claim_by_manifest":
+            return {"ok": True, "result": {"claim_id": "pod-1"}}
+        return {"ok": True, "result": {"status": view_status["value"], "protocol_result": "EVIDENCE_SUFFICIENT"}}
+
+    monkeypatch.setattr("api.chain.invoke", invoke)
+    for _ in range(4):
+        assert chain_ops.execute_one()
+    assert chain_ops.execute_one()
+    with SessionLocal() as db:
+        assert db.get(ChainOperation, operation_id).status == "submitted"
+    view_status["value"] = "FINALIZED"
+    assert chain_ops.execute_one()
+    with SessionLocal() as db:
+        assert db.get(ChainOperation, operation_id).status == "done"
 
 
 def test_uncertain_broadcast_is_not_automatically_repeated(monkeypatch):

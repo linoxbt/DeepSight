@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { Shell } from "@/components/Shell";
+import { api } from "@/lib/api";
 
 type Item = { id: string; target_id: string; headline: string; scientific_status: string };
 
@@ -11,11 +12,11 @@ export default function DiscoveriesPage() {
   const [error, setError] = useState("");
 
   useEffect(() => {
-    fetch("/v1/discoveries")
-      .then((response) => response.json())
+    api("/v1/discoveries")
       .then((body) => {
+        if (!Array.isArray(body.discoveries)) throw new Error("Invalid findings response");
         setItems(body.discoveries);
-        setNote(body.note);
+        setNote(body.note || "");
       })
       .catch(() => setError("Findings could not be loaded."));
   }, []);

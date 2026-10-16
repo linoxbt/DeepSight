@@ -3,12 +3,13 @@ import json
 import time
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select, update
 
 from api.auth import current_user
 from api.db import JobRow, SessionLocal
+from api.limits import rate_limit
 
 router = APIRouter(prefix="/v1/jobs", tags=["jobs"])
 
@@ -20,7 +21,8 @@ class JobIn(BaseModel):
 
 
 @router.post("", status_code=202)
-def enqueue(body: JobIn, user: str = Depends(current_user)):
+def enqueue(body: JobIn, request: Request, user: str = Depends(current_user)):
+    rate_limit(request, f"jobs:{user}", 30, 3600)
     if body.kind == "analysis" and not body.target_id:
         raise HTTPException(422, "A target is required")
     if body.kind == "import" and not body.tic:

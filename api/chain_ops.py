@@ -85,6 +85,9 @@ def prepare(claim_id: str, body: IntentIn, user: str = Depends(current_user)):
     cfg = chain.load_config()
     if cfg is None or os.environ.get("DEEPSIGHT_RELAY_ENABLED") != "1":
         raise HTTPException(503, "The chain relay is not configured and enabled")
+    relay_address = os.environ.get("DEEPSIGHT_RELAY_ADDRESS", "").lower()
+    if len(relay_address) != 42 or not relay_address.startswith("0x") or any(c not in "0123456789abcdef" for c in relay_address[2:]):
+        raise HTTPException(503, "Set DEEPSIGHT_RELAY_ADDRESS to the submitting relay wallet address")
     with SessionLocal() as db:
         claim = claim_for(db, claim_id)
         eligible(claim, body.action, user)
@@ -94,6 +97,8 @@ def prepare(claim_id: str, body: IntentIn, user: str = Depends(current_user)):
         payload["manifest_hash"] = claim.manifest_hash
         if body.action == "submit":
             manifest = json.loads(claim.manifest_json)
+            if manifest.get("claimant_address") != relay_address or manifest.get("researcher_address") != user:
+                raise HTTPException(409, "Manifest does not bind this relay and researcher; create new evidence")
             if sha256_text(claim.manifest_json) != claim.manifest_hash:
                 raise HTTPException(409, "Manifest checksum verification failed")
             if len(claim.manifest_json) > 8000:
@@ -115,9 +120,12 @@ def prepare(claim_id: str, body: IntentIn, user: str = Depends(current_user)):
             raise HTTPException(422, "Transaction does not belong to this claim")
         if body.action == "supersede":
             manifest = json.loads(claim.manifest_json)
+            if manifest.get("claimant_address") != relay_address or manifest.get("researcher_address") != user:
+                raise HTTPException(409, "Manifest does not bind this relay and researcher")
             manifest["supersedes"] = claim.manifest_hash
             payload["replacement"] = canonicalize(manifest)
             payload["replacement_hash"] = sha256_text(payload["replacement"])
+            payload["replacement_id"] = "clm_" + secrets.token_hex(6)
         nonce, now = secrets.token_hex(24), int(time.time())
         message = (f"DeepSight chain authorization\nOrigin: {origin()}\nNetwork: GenLayer StudioNet\n"
                    f"Contract: {cfg['address']}\nResearcher: {user}\nClaim: {claim.id}\n"
@@ -157,6 +165,12 @@ def authorize(claim_id: str, body: AuthorizationIn, user: str = Depends(current_
         consumed = db.execute(delete(ChainIntent).where(ChainIntent.id == intent.id))
         if consumed.rowcount != 1:
             raise HTTPException(409, "Authorization already used")
+        if intent.action == "supersede":
+            now = claim.updated_at
+            db.add(ClaimRow(id=payload["replacement_id"], analysis_id=claim.analysis_id, owner=user,
+                            manifest_json=payload["replacement"], manifest_hash=payload["replacement_hash"],
+                            status="PENDING_CHAIN", chain_status="QUEUED", supersedes=claim.id,
+                            created_at=now, updated_at=now))
         operation = ChainOperation(id="op_"+secrets.token_hex(16), claim_id=claim_id, actor=user,
                                    action=intent.action, stage="register" if intent.action == "submit" else intent.action,
                                    status="queued", payload=intent.payload, authorization=intent.message,
@@ -258,7 +272,8 @@ def _command(op, claim, payload):
     elif op.stage == "retract":
         method, args = "retract_claim", [claim.chain_claim_id]
     elif op.stage == "supersede":
-        method, args = "supersede_claim", [claim.chain_claim_id, payload["replacement_hash"], source]
+        replacement_source = origin()+f"/v1/claims/{payload['replacement_id']}/manifest"
+        method, args = "supersede_claim", [claim.chain_claim_id, payload["replacement_hash"], replacement_source]
     else:
         return {"action": "appeal", "tx_hash": payload["tx_hash"]}
     return {"action": "broadcast", "method": method, "args": args}
@@ -278,17 +293,34 @@ def _finish(db, op, claim, cfg, payload):
     state = result.get("result")
     if not result.get("ok") or not isinstance(state, dict):
         raise RuntimeError("Claim not readable yet")
+    expected = {
+        "review": ("FINALIZED", "NEEDS_REVIEW"),
+        "challenge": ("CHALLENGED",),
+        "retract": ("RETRACTED",),
+        "supersede": ("SUPERSEDED",),
+    }.get(op.stage)
+    if expected and state.get("status") not in expected:
+        raise RuntimeError("Contract claim state has not caught up with the finalized transaction")
+    if op.stage == "supersede" and not state.get("superseded_by"):
+        raise RuntimeError("Contract replacement is not readable yet")
+    if op.stage == "supersede":
+        replacement_view = chain.invoke({"action": "read", "method": "read_claim_by_manifest", "args": [payload["replacement_hash"]]}, cfg)
+        replacement_state = replacement_view.get("result")
+        if (not replacement_view.get("ok") or not isinstance(replacement_state, dict)
+                or replacement_state.get("claim_id") != state["superseded_by"]
+                or replacement_state.get("manifest_hash") != payload["replacement_hash"]):
+            raise RuntimeError("Contract replacement hash or ID is not readable yet")
     claim.chain_protocol_result = str(state.get("protocol_result", ""))
     claim.chain_rationale = str(state.get("rationale", ""))
     if op.stage == "challenge":
         claim.challenge_reason = payload["reason"].strip()
         claim.challenge_reason_hash = sha256_text(claim.challenge_reason)
     if op.stage == "supersede":
-        replacement = ClaimRow(id="clm_"+secrets.token_hex(6), analysis_id=claim.analysis_id, owner=claim.owner,
-                               manifest_json=payload["replacement"], manifest_hash=payload["replacement_hash"],
-                               status="EVIDENCE_READY", supersedes=claim.id, chain_claim_id=str(state.get("superseded_by", "")),
-                               created_at=claim.updated_at, updated_at=claim.updated_at)
-        db.add(replacement)
+        replacement = db.get(ClaimRow, payload["replacement_id"])
+        if replacement is None or replacement.manifest_hash != payload["replacement_hash"]:
+            raise RuntimeError("Published replacement manifest is missing or changed")
+        replacement.status = "EVIDENCE_READY"
+        replacement.chain_claim_id = str(state.get("superseded_by", ""))
         claim.superseded_by = replacement.id
         claim.status = "SUPERSEDED"
         event(db, claim, "SUPERSEDED", f"Chain replacement {replacement.id} finalized")

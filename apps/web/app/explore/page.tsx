@@ -14,6 +14,7 @@ export default function ExplorePage() {
   const [error, setError] = useState("");
   const [tic, setTic] = useState("");
   const [importing, setImporting] = useState(false);
+  const [progress, setProgress] = useState("");
   const [imported, setImported] = useState<{ id: string; summary: string; cached: boolean } | null>(null);
 
   async function search(event: React.FormEvent) {
@@ -39,15 +40,17 @@ export default function ExplorePage() {
   async function importCurve(event?: React.FormEvent, example?: string) {
     event?.preventDefault();
     setImporting(true);
+    setProgress("Starting import");
     setError("");
     setImported(null);
     try {
-      const body = await runJob("import", { tic: example || tic.trim() });
+      const body = await runJob("import", { tic: example || tic.trim() }, setProgress);
       setImported({ id: body.target.id, summary: body.target.summary, cached: body.cached });
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "MAST import failed");
     } finally {
       setImporting(false);
+      setProgress("");
     }
   }
 
@@ -67,6 +70,7 @@ export default function ExplorePage() {
           <section className="panel start-card"><span className="step-number">03 / EXPLORE</span><h2>Browse the archives</h2><p>Find published exoplanets, nearby stars, and other research data.</p><a className="primary" href="/tap">Browse exoplanets ↗</a></section>
         </div>
         {error ? <p role="alert" className="callout fail">{error === "The analysis API is not reachable." || error.includes("Request failed (500)") ? "The research service is temporarily unavailable. You can still inspect an image below." : error}</p> : null}
+        {importing && progress ? <p role="status" className="callout">{progress}…</p> : null}
         <ImageDesk />
         <section className="panel manual-import">
           <h2>Have a star in mind?</h2>

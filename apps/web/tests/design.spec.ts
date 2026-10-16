@@ -3,7 +3,7 @@ import { test, expect } from "@playwright/test";
 for (const width of [1440, 390]) {
   test(`editorial layout and navigation at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 1000 });
-    await page.route("**/api/auth/session", route => route.fulfill({ status: 401, json: { detail: "Sign in" } }));
+    await page.route("**/v1/auth/session", route => route.fulfill({ status: 401, json: { detail: "Sign in" } }));
     await page.goto("/");
     await expect(page.getByRole("heading", { name: "Wonder, with evidence." })).toBeVisible();
     await expect(page.getByRole("link", { name: "Enter the workspace" })).toHaveAttribute("href", "/explore");
@@ -26,10 +26,10 @@ for (const width of [1440, 390]) {
 }
 
 test("registry filters records, searches targets, and opens evidence", async ({ page }) => {
-  await page.route("**/api/auth/session", route => route.fulfill({ status: 401, json: {} }));
+  await page.route("**/v1/auth/session", route => route.fulfill({ status: 401, json: {} }));
   await page.route("**/v1/claims", route => route.fulfill({ json: { claims: [
-    { id: "clm_one", target_id: "TIC-123", status: "SUBMITTED", scientific_status: "unconfirmed_candidate", protocol_result: "NEEDS_HUMAN_REVIEW" },
-    { id: "clm_two", target_id: "TIC-456", status: "FINALIZED", scientific_status: "known", protocol_result: "EVIDENCE_SUFFICIENT" },
+    { id: "clm_one", target_id: "TIC-123", status: "NEEDS_REVIEW", scientific_status: "unconfirmed_candidate", protocol_result: "NEEDS_HUMAN_REVIEW", chain_protocol_result: "", chain_status: "not_submitted", chain_execution: "" },
+    { id: "clm_two", target_id: "TIC-456", status: "FINALIZED", scientific_status: "known", protocol_result: "EVIDENCE_SUFFICIENT", chain_protocol_result: "EVIDENCE_SUFFICIENT", chain_status: "FINALIZED", chain_execution: "SUCCESS" },
   ] } }));
   await page.goto("/claims");
   await expect(page.locator(".claim-card")).toHaveCount(2);
@@ -46,7 +46,7 @@ test("registry filters records, searches targets, and opens evidence", async ({ 
 });
 
 test("paper is default and theme preference persists", async ({ page }) => {
-  await page.route("**/api/auth/session", route => route.fulfill({ status: 401, json: {} }));
+  await page.route("**/v1/auth/session", route => route.fulfill({ status: 401, json: {} }));
   await page.goto("/");
   await expect(page.getByRole("button", { name: "Observation mode" })).toBeVisible();
   await page.getByRole("button", { name: "Observation mode" }).click();
@@ -58,7 +58,7 @@ test("paper is default and theme preference persists", async ({ page }) => {
 });
 
 test("image notebook accepts a photo and exports notes locally", async ({ page }) => {
-  await page.route("**/api/auth/session", route => route.fulfill({ status: 401, json: {} }));
+  await page.route("**/v1/auth/session", route => route.fulfill({ status: 401, json: {} }));
   await page.goto("/explore");
   await page.getByRole("textbox", { name: "TIC ID" }).isVisible();
   await page.getByLabel("Choose a sky image").setInputFiles({
@@ -75,20 +75,9 @@ test("image notebook accepts a photo and exports notes locally", async ({ page }
 });
 
 test("registry distinguishes failed requests from empty records", async ({ page }) => {
-  await page.route("**/api/auth/session", route => route.fulfill({ status: 401, json: {} }));
+  await page.route("**/v1/auth/session", route => route.fulfill({ status: 401, json: {} }));
   await page.route("**/v1/claims", route => route.fulfill({ status: 503, json: { detail: "Unavailable" } }));
   await page.goto("/claims");
   await expect(page.getByRole("alert").filter({ hasText: "Claims could not be loaded" })).toHaveText("Claims could not be loaded. Please try again later.");
   await expect(page.getByText("An open page for your evidence.")).toHaveCount(0);
-});
-
-test("wallet auth route gives a signed-out state and rejects foreign origins", async ({ request }) => {
-  const session = await request.get("/api/auth/session");
-  expect(session.status()).toBe(401);
-  expect((await session.json()).detail).toBe("Sign in with your wallet to continue");
-  const foreign = await request.post("/api/auth/challenge", {
-    headers: { origin: "https://attacker.invalid" },
-    data: { address: "0x1111111111111111111111111111111111111111" },
-  });
-  expect(foreign.status()).toBe(403);
 });

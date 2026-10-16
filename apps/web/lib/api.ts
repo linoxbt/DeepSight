@@ -14,12 +14,15 @@ export async function runJob(kind: "analysis" | "import" | "radio", input: Recor
 }
 
 export async function waitForJob(id: string, onStatus?: (text: string) => void) {
-  for (let attempt = 0; attempt < 900; attempt++) {
+  const deadline = Date.now() + 30 * 60 * 1000;
+  let delay = 2000;
+  while (Date.now() < deadline) {
     const job = await api(`/v1/jobs/${id}`);
-    onStatus?.(job.status === "running" ? "Analyzing" : "Queued");
+    onStatus?.(job.status === "running" ? "Running" : "Queued");
     if (job.status === "succeeded") { sessionStorage.removeItem("deepsight-job"); return job.result; }
     if (job.status === "failed") { sessionStorage.removeItem("deepsight-job"); throw new Error(job.error); }
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    await new Promise(resolve => setTimeout(resolve, delay));
+    delay = Math.min(10000, Math.round(delay * 1.5));
   }
   throw new Error(`Job ${id} is still running. Reopen the lab to resume.`);
 }

@@ -255,7 +255,9 @@ def _match_rows(
         if abs(period_days - row["period_days"]) <= tolerance:
             period_hits.append(row)
         labels = {row["name"], row["hostname"], row["tic_id"], row["host_tic"], f"TIC-{row['host_tic']}"}
-        if queried_by_id or identifiers.intersection(labels):
+        # A TIC lookup may fall back to a coordinate cone. A nearby row is not
+        # an identifier match merely because the original request had a TIC.
+        if identifiers.intersection(labels):
             id_hits.append(row)
     if id_hits and period_hits and any(row in period_hits for row in id_hits):
         matched = next(row for row in id_hits if row in period_hits)

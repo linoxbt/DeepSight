@@ -80,6 +80,7 @@ Configure the same settings on API and worker:
 
 - `DEEPSIGHT_ORIGIN`: exact browser origin; HTTPS enables secure session cookies.
 - `DEEPSIGHT_CONTRACT_ADDRESS`: actual deployed contract address.
+- `DEEPSIGHT_RELAY_ADDRESS`: address of the relay account that sends contract transactions. Set this before creating claims intended for chain submission; the canonical manifest binds this address and separately records the researcher's address.
 - `DEEPSIGHT_KEYSTORE`, `DEEPSIGHT_CHAIN_PASSWORD`: encrypted relay account access.
 - `DEEPSIGHT_RELAY_ENABLED=1`: explicitly enable broadcasting.
 - `DEEPSIGHT_REVIEWERS`: comma-separated wallet addresses allowed to add review notes.
@@ -103,6 +104,10 @@ until a chain mutation is successfully finalized.
 No contract deployment or live transaction is performed by installation or tests.
 Use a contract built from this tree; local lint and mock-based integration tests
 are not proof of live network behavior.
+Deploy `ProofOfDiscovery` with the public HTTPS web origin as its constructor
+argument. Validators fetch each published manifest from that fixed origin and
+check its hash, target, and relay claimant before registration. This verifies
+the published record, not the scientific measurements or the external archives.
 
 ## Deployment
 
@@ -113,7 +118,8 @@ archive volume. The Python image includes Node and the pinned adapter packages.
 
 For separately hosted web and API services, set `API_PROXY` when building the
 Next.js app and set `DEEPSIGHT_ORIGIN` to the public web origin. Keep the same
-origin proxy for session cookies. Netlify configuration remains available.
+origin proxy for session cookies. Netlify builds fail if `API_PROXY` is absent
+or does not use HTTPS; a loopback rewrite cannot serve a deployed site.
 
 ## Checks
 

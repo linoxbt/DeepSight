@@ -21,6 +21,8 @@ from api.manifest import canonicalize, sha256_text
 CATALOG_URL = "https://breakthroughinitiatives.org/opendatasearch"
 TUTORIAL_URL = "http://blpd0.ssl.berkeley.edu/Voyager_data/Voyager1.single_coarse.fine_res.h5"
 TUTORIAL_NAME = "Voyager1.single_coarse.fine_res.h5"
+TUTORIAL_SHA256 = "c9a9a54f4140e3754ffb2455fae4eeb2eb70c8207123116ee953e4fce15c36ac"
+MAX_TUTORIAL_BYTES = 100 * 1024 * 1024
 USER_AGENT = "DeepSight/0.1"
 ARCHIVE_NAME = "Breakthrough Listen"
 
@@ -144,21 +146,32 @@ def analyze_tutorial(cache_dir: Path) -> dict[str, Any]:
 def ensure_tutorial(cache_dir: Path) -> tuple[Path, str]:
     cache_dir.mkdir(parents=True, exist_ok=True)
     path = cache_dir / TUTORIAL_NAME
-    if path.exists() and path.stat().st_size > 1_000_000:
-        return path, _sha256_file(path)
+    if path.exists():
+        if path.stat().st_size <= MAX_TUTORIAL_BYTES and _sha256_file(path) == TUTORIAL_SHA256:
+            return path, TUTORIAL_SHA256
+        path.unlink()
     temporary = path.with_suffix(".part")
     try:
         with httpx.Client(timeout=180, follow_redirects=True) as client:
             with client.stream("GET", TUTORIAL_URL, headers={"User-Agent": USER_AGENT}) as response:
                 response.raise_for_status()
+                total = 0
                 with temporary.open("wb") as handle:
                     for chunk in response.iter_bytes():
+                        total += len(chunk)
+                        if total > MAX_TUTORIAL_BYTES:
+                            raise ArchiveError("The Voyager product exceeds the allowed size.", 413)
                         handle.write(chunk)
+        if _sha256_file(temporary) != TUTORIAL_SHA256:
+            raise ArchiveError("The Voyager product failed its pinned checksum.")
     except httpx.HTTPError as exc:
         temporary.unlink(missing_ok=True)
         raise ArchiveError("The Voyager calibration product did not finish downloading.") from exc
+    except ArchiveError:
+        temporary.unlink(missing_ok=True)
+        raise
     temporary.replace(path)
-    return path, _sha256_file(path)
+    return path, TUTORIAL_SHA256
 
 
 def read_h5(path: Path) -> dict[str, Any]:
@@ -311,9 +324,11 @@ def public_radio_result(
     }
 
 
-def build_radio_manifest(result: dict[str, Any], *, analysis_id: str, git_commit: str) -> dict[str, Any]:
+def build_radio_manifest(result: dict[str, Any], *, analysis_id: str, git_commit: str, claimant_address: str, researcher_address: str) -> dict[str, Any]:
     document = {
         "schema_version": "1.1",
+        "claimant_address": claimant_address,
+        "researcher_address": researcher_address,
         "claim_type": "radio_signal_integrity",
         "policy_version": "signal-v1",
         "target": {"id": result["target_name"]},
