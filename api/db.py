@@ -8,7 +8,7 @@ from pathlib import Path
 from sqlalchemy import Boolean, Integer, String, Text, UniqueConstraint, create_engine, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
-DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+DATA_DIR = Path(os.environ.get("DEEPSIGHT_DATA_DIR", str(Path(__file__).resolve().parent.parent / "data")))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 DATABASE_PATH = Path(os.environ.get("DEEPSIGHT_DB", str(DATA_DIR / "deepsight.db")))
 DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -56,6 +56,7 @@ class ClaimRow(Base):
     revision: Mapped[int] = mapped_column(Integer, default=1)
     __mapper_args__ = {"version_id_col": revision}
     owner: Mapped[str] = mapped_column(String, default="")
+    public: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     chain_protocol_result: Mapped[str] = mapped_column(String, default="")
     chain_rationale: Mapped[str] = mapped_column(Text, default="")
     chain_execution: Mapped[str] = mapped_column(String, default="")
@@ -118,7 +119,7 @@ def init_db() -> None:
                 version = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
             except Exception as exc:
                 raise RuntimeError("Database migrations have not been applied") from exc
-            if version != "0003":
+            if version != "0005":
                 raise RuntimeError(f"Unsupported database schema revision: {version}")
         return
     Base.metadata.create_all(engine)
@@ -137,6 +138,7 @@ def _ensure_claim_columns() -> None:
     statements = {
         "revision": "ALTER TABLE claims ADD COLUMN revision INTEGER NOT NULL DEFAULT 1",
         "owner": "ALTER TABLE claims ADD COLUMN owner VARCHAR DEFAULT ''",
+        "public": "ALTER TABLE claims ADD COLUMN public BOOLEAN NOT NULL DEFAULT 0",
         "chain_protocol_result": "ALTER TABLE claims ADD COLUMN chain_protocol_result VARCHAR DEFAULT ''",
         "chain_rationale": "ALTER TABLE claims ADD COLUMN chain_rationale TEXT DEFAULT ''",
         "chain_execution": "ALTER TABLE claims ADD COLUMN chain_execution VARCHAR DEFAULT ''",
@@ -188,6 +190,13 @@ class RateLimitRow(Base):
     key: Mapped[str] = mapped_column(String, primary_key=True)
     count: Mapped[int] = mapped_column(Integer, default=0)
     expires: Mapped[int] = mapped_column(Integer, index=True)
+
+
+class ServiceHeartbeat(Base):
+    __tablename__ = "service_heartbeats"
+    name: Mapped[str] = mapped_column(String, primary_key=True)
+    updated: Mapped[int] = mapped_column(Integer)
+    detail: Mapped[str] = mapped_column(Text, default="")
 
 
 class ArtifactRow(Base):

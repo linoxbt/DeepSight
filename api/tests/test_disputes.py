@@ -20,6 +20,7 @@ def test_challenge_and_retract_stay_local_without_a_contract(monkeypatch):
     claim_id = claim.json()["id"]
     reviewed = client.post(f"/v1/claims/{claim_id}/review-request")
     assert reviewed.json()["status"] == "NEEDS_REVIEW"
+    assert client.post(f"/v1/claims/{claim_id}/publish", json={"acknowledged": True}).status_code == 200
 
     reviewer = "0x" + "2" * 40
     second_reviewer = "0x" + "3" * 40

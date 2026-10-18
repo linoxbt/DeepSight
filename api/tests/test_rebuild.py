@@ -7,12 +7,13 @@ from pathlib import Path
 import pytest
 from eth_account import Account
 from eth_account.messages import encode_defunct
+from astropy.io import fits
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from api import chain_ops, evidence, jobs
-from api.auth import current_user
-from api.db import ClaimRow, ChainIntent, ChainOperation, SessionLocal
+from api.auth import current_user, optional_user
+from api.db import DATA_DIR, AuthSession, ClaimRow, ChainIntent, ChainOperation, SessionLocal
 from api.main import app
 from api.policy import evaluate
 from api.tests.test_policy import _base
@@ -29,6 +30,11 @@ def insert_claim(status="EVIDENCE_READY", owner=OWNER):
     document["artifacts"] = [{"sha256": digest, "uri": f"/v1/artifacts/{digest}"}]
     document["analysis"]["environment_sha256"] = evidence.put_json({"environment": "test"})
     document["cross_matches"][0]["query_snapshot_sha256"] = evidence.put_json({"catalogue": "test"})
+    raw_path = DATA_DIR / "test_raw.fits"
+    fits.HDUList([fits.PrimaryHDU()]).writeto(raw_path, overwrite=True)
+    raw_digest = evidence.put_fits(raw_path)
+    document["archive"]["raw_source_sha256"] = raw_digest
+    document["archive"]["raw_source_uri"] = f"/v1/raw/{raw_digest}"
     text = json.dumps(document)
     with SessionLocal() as db:
         row = ClaimRow(id="clm_test", analysis_id="an_test", owner=owner, manifest_json=text,
@@ -63,6 +69,15 @@ def test_studionet_deployment_is_discoverable_without_local_chain_file(monkeypat
     config = load_config()
     assert config is not None
     assert config["address"] == "0xadE6737f44b65b3Faeb7C0aCedd3b0fD23844a0a"
+
+
+def test_packaged_source_revision_is_verifiable_without_git(monkeypatch):
+    from api.main import _git_commit
+    monkeypatch.delenv("DEEPSIGHT_GIT_COMMIT", raising=False)
+    monkeypatch.delenv("RAILWAY_GIT_COMMIT_SHA", raising=False)
+    monkeypatch.setattr("api.main.subprocess.check_output", lambda *args, **kwargs: (_ for _ in ()).throw(FileNotFoundError()))
+    revision = _git_commit()
+    assert revision.startswith("source-sha256:") and len(revision) == 78
 
 
 def test_finalized_claim_does_not_offer_invalid_appeal(monkeypatch):
@@ -144,6 +159,7 @@ def test_evidence_bundle_contains_exact_hashable_bytes():
         response = client.post("/v1/claims", json={"analysis_id": analysis["id"], "acknowledged": True})
         assert response.status_code == 200, response.text
         claim = response.json()
+        assert client.post(f"/v1/claims/{claim['id']}/publish", json={"acknowledged": True}).status_code == 200
         bundle = client.get(f"/v1/claims/{claim['id']}/bundle").json()
         assert hashlib.sha256(bundle["manifest"].encode()).hexdigest() == bundle["manifest_sha256"]
         for digest, content in bundle["artifacts"].items():
@@ -155,6 +171,47 @@ def test_evidence_bundle_contains_exact_hashable_bytes():
         assert manifest["analysis"]["environment_sha256"]
         app.dependency_overrides[current_user] = lambda: OTHER
         assert client.post("/v1/claims", json={"analysis_id": analysis["id"], "acknowledged": True}).status_code == 403
+
+
+def test_draft_claim_and_artifacts_are_private_until_explicit_publication():
+    with TestClient(app) as client:
+        analysis = client.post("/v1/analyses", json={"target_id": "DS-SYN-001"}).json()
+        claim = client.post("/v1/claims", json={"analysis_id": analysis["id"], "acknowledged": True}).json()
+        claim_id = claim["id"]
+        digest = analysis["series_sha256"]
+        app.dependency_overrides.pop(optional_user, None)
+        assert all(row["id"] != claim_id for row in client.get("/v1/claims").json()["claims"])
+        for suffix in ("", "/manifest", "/bundle", "/timeline", "/finality", "/operations"):
+            assert client.get(f"/v1/claims/{claim_id}{suffix}").status_code == 404
+        assert client.get(f"/v1/artifacts/{digest}").status_code == 401
+        assert client.post(f"/v1/claims/{claim_id}/publish", json={"acknowledged": False}).status_code == 422
+        token = "draft-owner-token"
+        with SessionLocal() as db:
+            db.add(AuthSession(token_hash=hashlib.sha256(token.encode()).hexdigest(), address=OWNER, expires=int(time.time()) + 60))
+            db.commit()
+        client.cookies.set("deepsight_session", token)
+        assert client.get(f"/v1/claims/{claim_id}").status_code == 200
+        assert client.post(f"/v1/claims/{claim_id}/publish", json={"acknowledged": True}).status_code == 200
+        client.cookies.clear()
+        assert client.get(f"/v1/claims/{claim_id}").status_code == 200
+        assert client.get(f"/v1/artifacts/{digest}").status_code == 200
+
+
+def test_only_operator_can_reconcile_unknown_broadcast(monkeypatch):
+    claim_id = insert_claim()
+    with SessionLocal() as db:
+        db.add(ChainOperation(id="op_unknown", claim_id=claim_id, actor=OWNER,
+                              action="submit", stage="register", status="unknown", payload="{}",
+                              authorization="signed", signature="0x12", updated=int(time.time())))
+        db.commit()
+    body = {"decision": "confirmed_not_broadcast", "evidence": "Relay nonce unchanged after explorer and RPC checks"}
+    with TestClient(app) as client:
+        assert client.post("/v1/chain/operations/op_unknown/reconcile", json=body).status_code == 403
+        monkeypatch.setenv("DEEPSIGHT_OPERATORS", OWNER)
+        response = client.post("/v1/chain/operations/op_unknown/reconcile", json=body)
+        assert response.status_code == 200, response.text
+        assert response.json()["status"] == "queued"
+        assert client.post("/v1/chain/operations/op_unknown/reconcile", json=body).status_code == 409
 
 
 def test_unpublished_analysis_and_artifact_are_owner_scoped():
@@ -193,6 +250,7 @@ def test_discoveries_require_finalized_chain_decision():
         claim.chain_protocol_result = "EVIDENCE_SUFFICIENT"
         claim.chain_status = "FINALIZED"
         claim.chain_execution = "SUCCESS"
+        claim.public = True
         db.commit()
     with TestClient(app) as client:
         assert [item["id"] for item in client.get("/v1/discoveries").json()["discoveries"]] == ["clm_test"]

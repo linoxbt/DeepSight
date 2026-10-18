@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { api, runJob } from "@/lib/api";
 import { Shell } from "@/components/Shell";
+import { Plot } from "@/components/Plot";
 
 type Observation = {
   utc: string;
@@ -61,8 +62,8 @@ export default function RadioPage() {
       }
       setRows(body.observations);
       setCatalogNote(body.note);
-    } catch {
-      setError("The analysis API is not reachable.");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "The analysis API is not reachable.");
     } finally {
       setBusy("");
     }
@@ -75,8 +76,8 @@ export default function RadioPage() {
     try {
       const body = await runJob("radio");
       setAnalysis(body);
-    } catch {
-      setError("The analysis API is not reachable.");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "The analysis API is not reachable.");
     } finally {
       setBusy("");
     }
@@ -115,8 +116,6 @@ export default function RadioPage() {
       setBusy("");
     }
   }
-
-  const plot = analysis?.plot.relative_power ?? [];
 
   return (
     <Shell active="/radio">
@@ -173,14 +172,8 @@ export default function RadioPage() {
               <p>{analysis.note}</p>
               <p className="mono">Status {analysis.scientific_status}. Off-target {analysis.off_target_comparison}. MAD score {analysis.metrics.snr_proxy}. Hits {analysis.metrics.n_hits}.</p>
               <p className="fine muted">{analysis.frequency_range}. {analysis.time_range}.</p>
-              <svg viewBox="0 0 640 160" role="img" aria-label="Relative power of the screened spectrum">
-                <title>Screened spectrum</title>
-                {plot.map((value, index) => {
-                  const x = 20 + (index / Math.max(plot.length - 1, 1)) * 600;
-                  const y = 140 - Math.max(0, Math.min(1, (value + 1) / 2)) * 120;
-                  return <circle key={index} cx={x} cy={y} r="1.4" fill="#00A7A0" />;
-                })}
-              </svg>
+              <Plot x={analysis.plot.frequency_mhz} y={analysis.plot.relative_power}
+                xLabel="frequency (MHz)" yLabel="relative power" description="Screened Voyager calibration spectrum; a narrowband excess is not a technosignature." />
               <ul className="flags">
                 {analysis.hits.slice(0, 5).map((hit) => (
                   <li key={`${hit.frequency_mhz}-${hit.mad_score}`}>{hit.frequency_mhz} MHz, MAD score {hit.mad_score}</li>

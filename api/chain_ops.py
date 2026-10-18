@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import delete, select, update
 
 from api import chain, evidence
-from api.auth import current_user, require_owner, origin
+from api.auth import current_user, optional_user, require_operator, require_owner, origin
 from api.db import ChainIntent, ChainOperation, ClaimRow, ClaimEventRow, SessionLocal
 from api.manifest import canonicalize, sha256_text
 from api.signatures import valid_message_signature
@@ -47,6 +47,12 @@ class IntentIn(BaseModel):
 class AuthorizationIn(BaseModel):
     intent_id: str = Field(min_length=48, max_length=48)
     signature: str = Field(pattern=r"^(?:0x)?(?:[0-9a-fA-F]{2}){1,2048}$")
+
+
+class ReconcileIn(BaseModel):
+    decision: str = Field(pattern="^(attach_hash|confirmed_not_broadcast)$")
+    tx_hash: str = Field(default="", pattern=r"^(?:0x[0-9a-fA-F]{64})?$")
+    evidence: str = Field(min_length=20, max_length=1000)
 
 
 def claim_for(db, claim_id):
@@ -124,6 +130,11 @@ def prepare(claim_id: str, body: IntentIn, user: str = Depends(current_user)):
             if not env:
                 raise HTTPException(422, "Regenerate evidence to retain the reproducible environment")
             evidence.read(env)
+            raw_digest = manifest.get("archive", {}).get("raw_source_sha256")
+            if manifest.get("archive", {}).get("name") == "MAST":
+                if not raw_digest:
+                    raise HTTPException(422, "Regenerate evidence with the pinned raw MAST product")
+                evidence.read_fits(raw_digest)
             for match in manifest.get("cross_matches", []):
                 evidence.read(match["query_snapshot_sha256"])
             # Legacy local references must be regenerated before publication.
@@ -149,7 +160,7 @@ def prepare(claim_id: str, body: IntentIn, user: str = Depends(current_user)):
                    f"Contract: {cfg['address']}\nResearcher: {user}\nClaim: {claim.id}\n"
                    f"Manifest SHA256: {claim.manifest_hash}\nAction: {body.action}\n"
                    f"Payload: {canonicalize(payload)}\nNonce: {nonce}\nExpires: {now + 300}\n"
-                   "I authorize the DeepSight server relay to execute this operation and review any registered replacement. The relay is the on-chain claimant and pays network fees.")
+                   "I authorize the DeepSight server relay to execute this operation and review any registered replacement. I understand that submission publishes the manifest, evidence, and my wallet address. The relay is the on-chain claimant and pays network fees.")
         db.add(ChainIntent(id=nonce, claim_id=claim.id, actor=user, action=body.action, payload=canonicalize(payload), message=message, expires=now+300))
         db.commit()
         return {"id": nonce, "message": message}
@@ -186,12 +197,17 @@ def authorize(claim_id: str, body: AuthorizationIn, user: str = Depends(current_
                         or replacement.supersedes != claim.id or replacement.manifest_hash != payload["replacement_hash"]):
                     raise HTTPException(409, "Pending replacement changed; sign a new authorization")
                 replacement.chain_status = "QUEUED"
+                replacement.public = True
             else:
                 now = claim.updated_at
                 db.add(ClaimRow(id=payload["replacement_id"], analysis_id=claim.analysis_id, owner=user,
                                 manifest_json=payload["replacement"], manifest_hash=payload["replacement_hash"],
-                                status="PENDING_CHAIN", chain_status="QUEUED", supersedes=claim.id,
+                                status="PENDING_CHAIN", chain_status="QUEUED", public=True, supersedes=claim.id,
                                 created_at=now, updated_at=now))
+            evidence.publish_manifest(db, json.loads(payload["replacement"]))
+        if intent.action == "submit":
+            evidence.publish_manifest(db, json.loads(claim.manifest_json))
+        claim.public = True
         operation = ChainOperation(id="op_"+secrets.token_hex(16), claim_id=claim_id, actor=user,
                                    action=intent.action, stage="register" if intent.action == "submit" else intent.action,
                                    status="queued", payload=intent.payload, authorization=intent.message,
@@ -203,12 +219,51 @@ def authorize(claim_id: str, body: AuthorizationIn, user: str = Depends(current_
 
 
 @router.get("/claims/{claim_id}/operations")
-def operations(claim_id: str):
+def operations(claim_id: str, viewer: str | None = Depends(optional_user)):
     with SessionLocal() as db:
-        claim_for(db, claim_id)
+        claim = claim_for(db, claim_id)
+        if not claim.public and claim.owner != viewer:
+            raise HTTPException(404, "Claim not found")
         rows = db.scalars(select(ChainOperation).where(ChainOperation.claim_id == claim_id).order_by(ChainOperation.updated)).all()
         return {"operations": [{"id": r.id, "action": r.action, "stage": r.stage, "status": r.status,
                                 "tx_hash": r.tx_hash, "error": r.error, "actor": r.actor} for r in rows]}
+
+
+@router.post("/chain/operations/{operation_id}/reconcile")
+def reconcile_operation(operation_id: str, body: ReconcileIn, user: str = Depends(current_user)):
+    require_operator(user)
+    if (body.decision == "attach_hash") != bool(body.tx_hash):
+        raise HTTPException(422, "A transaction hash is required only when attaching a broadcast")
+    with SessionLocal() as db:
+        op = db.scalar(select(ChainOperation).where(ChainOperation.id == operation_id, ChainOperation.status == "unknown").with_for_update())
+        if op is None:
+            raise HTTPException(409, "Operation is not awaiting reconciliation")
+        claim = claim_for(db, op.claim_id)
+        if body.decision == "attach_hash":
+            cfg = config_for_claim(claim)
+            if cfg is None:
+                raise HTTPException(503, "Contract configuration is unavailable")
+            receipt = chain.invoke({"action": "receipt", "tx_hash": body.tx_hash}, cfg)
+            if not receipt.get("ok") or receipt.get("status") not in ("ACCEPTED", "FINALIZED", "PENDING"):
+                raise HTTPException(422, "The supplied transaction is not visible to the configured network")
+            op.tx_hash = body.tx_hash
+            op.status = "submitted"
+            txs = json.loads(claim.chain_tx or "{}")
+            txs[op.stage] = body.tx_hash
+            claim.chain_tx = json.dumps(txs)
+            claim.chain_status = "SUBMITTED"
+        else:
+            # A human must first establish from the relay nonce and explorer
+            # that this attempt was never broadcast. The old signed intent is
+            # reused, so the retry cannot change the authorized operation.
+            op.status = "queued"
+            op.tx_hash = ""
+            claim.chain_status = "QUEUED"
+        op.error = ""
+        op.updated = int(time.time())
+        event(db, claim, "RECONCILED", f"Operator {user}: {body.decision}. Evidence: {body.evidence.strip()}")
+        db.commit()
+        return {"id": op.id, "status": op.status}
 
 
 def execute_one():

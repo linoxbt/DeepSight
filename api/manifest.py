@@ -67,6 +67,8 @@ def build_manifest(
         "archive": {
             "name": SYNTHETIC_ARCHIVE if target["synthetic"] else target["archive"],
             "observation_ids": [target["observation_id"]],
+            "raw_source_sha256": target.get("raw_sha256") if not target["synthetic"] else None,
+            "raw_source_uri": target.get("raw_uri") if not target["synthetic"] else None,
         },
         "analysis": {
             "git_commit": git_commit,

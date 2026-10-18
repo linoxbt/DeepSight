@@ -7,6 +7,7 @@ archive and it does not re-reduce the pixels.
 from __future__ import annotations
 
 import json
+import secrets
 from pathlib import Path
 from urllib.parse import quote
 
@@ -70,6 +71,7 @@ def fetch_tess_light_curve(tic: str, cache_dir: Path) -> dict:
     curve["exposure_seconds"] = int(observation.get("t_exptime") or 0)
     curve["product_filename"] = filename
     curve["data_uri"] = str(product["dataURI"])
+    curve["raw_path"] = str(path)
     return curve
 
 
@@ -167,7 +169,7 @@ def _choose_light_curve(products: list[dict]) -> dict:
 
 
 def _download(uri: str, path: Path) -> None:
-    temporary = path.with_suffix(path.suffix + ".part")
+    temporary = path.with_suffix(path.suffix + f".{secrets.token_hex(8)}.part")
     try:
         with httpx.stream(
             "GET",

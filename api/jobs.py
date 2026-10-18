@@ -6,7 +6,7 @@ import threading
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import select, update, text
+from sqlalchemy import select, update, text, func
 
 from api.auth import current_user
 from api.db import JobRow, SessionLocal
@@ -24,6 +24,7 @@ class JobIn(BaseModel):
 @router.post("", status_code=202)
 def enqueue(body: JobIn, request: Request, user: str = Depends(current_user)):
     rate_limit(request, f"jobs:{user}", 30, 3600)
+    rate_limit(request, "jobs-global", 30, 3600, global_scope=True)
     if body.kind == "analysis" and not body.target_id:
         raise HTTPException(422, "A target is required")
     if body.kind == "import" and not body.tic:
@@ -31,12 +32,16 @@ def enqueue(body: JobIn, request: Request, user: str = Depends(current_user)):
     with SessionLocal() as db:
         # Serialize the count-and-insert on both supported database engines.
         if db.bind.dialect.name == "postgresql":
+            db.execute(text("SELECT pg_advisory_xact_lock(hashtextextended('deepsight-jobs-global', 0))"))
             db.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:owner, 0))"), {"owner": user})
         else:
             db.execute(text("BEGIN IMMEDIATE"))
         active = db.scalars(select(JobRow).where(JobRow.owner == user, JobRow.status.in_(("queued", "running")))).all()
         if len(active) >= 3:
             raise HTTPException(429, "Wait for your current jobs to finish")
+        global_active = db.scalar(select(func.count()).select_from(JobRow).where(JobRow.status.in_(("queued", "running"))))
+        if global_active >= 8:
+            raise HTTPException(503, "The research workers are busy; retry shortly")
         job = JobRow(id="job_" + uuid.uuid4().hex, owner=user, kind=body.kind,
                      payload=body.model_dump_json(), created=int(time.time()), updated=int(time.time()))
         db.add(job)

@@ -1,6 +1,6 @@
 # DeepSight audit remediation status
 
-Updated 2026-10-18. **Deployed, but not production ready.** The public Netlify site uses a dedicated Railway project with a live Python API, worker, PostgreSQL and S3-compatible bucket. `/v1/health` returns HTTP 200. The v3 GenLayer contract is finalized and the relay is enabled. Scientific source reproduction and live social-login verification remain open.
+Updated 2026-10-18. **Not production ready.** The public Netlify site uses a dedicated Railway project with a live Python API, worker, PostgreSQL and S3-compatible bucket. The v3 GenLayer contract is finalized and the relay is enabled. Scientific source reproduction, live v3 consensus, and live social-login verification remain open. The fixes below have passed local checks; their production rollout must be verified separately.
 
 ## Current remediation
 
@@ -33,26 +33,35 @@ Updated 2026-10-18. **Deployed, but not production ready.** The public Netlify s
 | Netlify build configuration | `API_PROXY` points to the healthy Railway API; public `/v1/health` returns 200. |
 | Gaia public timeout | The Netlify proxy timed out on a live 36-second Gaia TAP query. The public read-only Gaia form now calls Railway directly; the API CORS preflight permits the Netlify origin. A live Chromium form submission returned one Gaia source. |
 | Public dashboard | The live browser loaded a real TESS claim from the hosted API. The claim projection now maps the manifest's `period` metric to the dashboard's `period_days` field; a regression test covers the mapping. The dashboard labels records as research claims rather than finalized publications. |
+| Public draft exposure | Unsigned claims and their JSON evidence are owner-only until explicit publication or signed chain submission. Existing submitted claims remain public. Owner/anonymous regression test passes. |
+| Raw MAST provenance | The exact FITS product is pinned in object storage by SHA-256 and linked in the manifest. Submission refuses a missing or corrupted pinned product. The JSON evidence bundle links to the binary product separately. |
+| Chain broadcast uncertainty | Designated operators can attach a network-visible transaction hash or document a verified non-broadcast and requeue the original signed operation. The endpoint is audited and role-restricted. A live uncertain operation still needs manual reconciliation. |
+| Build identification and contract link | Evidence records a deployed commit SHA or source checksum; the frontend links to the deployed v3 contract. |
+| Service dependency health | `/v1/ready` checks database, worker heartbeat, object store, and production backup freshness. The worker persists each successful backup heartbeat. This does not replace external alert delivery. |
+| Worker queue saturation and charts | Global active/rate limits prevent unbounded job backlog. Light-curve and radio plots expose axis labels, hover values and CSV export. |
 
 ## Open blockers
 
 | Severity | Finding | Required completion |
 | --- | --- | --- |
-| High | Validators compare known TIC period and depth against NASA TAP, but do not reprocess raw TESS pixels or independently verify the artifact contents; radio measurements have no independent archive comparison. | Build a reproducible source-data verification service or validator-bounded proof before treating the measurements themselves as verified. |
+| High | Radio measurements have no independent archive comparison and the Voyager calibration is not an open-ended signal search. | Add an independently sourced archive comparison before claiming validator-verified radio measurements. |
 | High | The v3 known-TIC comparison has not passed a live consensus review. A v2 review hit a float-encoding error; v3 fixes the encoding, but the first v3 registration returned no hash. StudioNet also exhausted its daily read-call allowance. | Reconcile the uncertain registration, restore RPC quota/funding as needed, and complete a signed v3 register/review with verified on-chain rationale. |
+| High | The current v3 validator compares NASA catalogue period/depth; it does not recompute the submitted light curve from the pinned raw FITS or rerun BLS independently. | Design and deploy a bounded verifier for raw-source measurements, then prove it with a live consensus review. Until then label results as evidence review only. |
 | Medium | Railway PITR's default-size isolated restore failed; the independent daily database dump was restored successfully, but PITR and operational alerting remain unproven. | Increase restore volume capacity, rerun PITR restore, and add backup failure/staleness alerts. |
 | High | Reown email/Google consent remains unverified live. EIP-1271 support has only mocked-RPC coverage. | Complete a real social-wallet sign-in and claim signature on the hosted site, including a deployed smart-account case if Reown issues one. |
 | Medium | Image upload is a private visual notebook and does not process FITS data or detect planets. | Define and implement a scientifically valid image workflow only if required by the product. |
 | Medium | MCP, persistent collaborative notebooks and Redis from the broader architecture are absent. | Prioritize after the deployed TESS workflow and evidence chain are reliable. |
 | Medium | No scheduled archive availability or snapshot-comparison monitor. | Add live smoke monitoring and scientific source review. |
 | Medium | Pre-finality consensus appeal has no supported UI or signed relay flow. | Implement only against StudioNet's authoritative appeal-window lifecycle; do not offer appeal on finalized claims. |
+| Medium | Readiness has a diagnostic endpoint but no external alert receiver; the Railway health check still targets process liveness. | Add an external monitor of `/v1/ready` and page an operator on stale worker/backup. |
+| Medium | A binary MAST FITS product is separately downloadable; the JSON bundle is not one self-contained archive. | Offer a ZIP export when portable single-file scientific reproduction is required. |
 
 ## Verification
 
-- Latest run after database backup changes: `uv run pytest -q api/tests`: 79 passed.
+- Latest full backend suite: `uv run pytest -q api/tests`: 84 passed. A focused post-fix subset: 53 passed.
 - `node --test api/tests/chain_execution.test.mjs`: passed.
-- `npm run build --prefix apps/web`: passed; `npm run test:browser --prefix apps/web`: 11 passed after the final test cleanup. Browser tests mock API data.
-- PostgreSQL 16: Alembic upgraded through 0003; `DEEPSIGHT_REQUIRE_MIGRATIONS=1` startup check passed. SQLite fresh/upgrade checks passed.
+- `npm run build --prefix apps/web`: passed; `npm run test:browser --prefix apps/web`: 11 passed. Browser tests mock API data.
+- Isolated PostgreSQL 16: Alembic upgraded through 0005; `DEEPSIGHT_REQUIRE_MIGRATIONS=1` startup check passed. SQLite migration checks passed.
 - `uv pip install -r requirements.lock --dry-run`, `POSTGRES_PASSWORD=dev-only-validation docker compose config --quiet`, and `git diff --check`: passed.
 - Public Netlify-to-Railway live smoke passed: health and registry reads; disposable EOA challenge, signature session and logout; private S3 image upload/read/notes; queued MAST import, BLS analysis, evidence preflight and local claim bundle; radio worker analysis. Test records remain private to their disposable wallets.
 - Public NASA TAP, JPL Horizons, Breakthrough Listen and direct Railway Gaia calls returned live results. The deployed Gaia page returned a live source through Chromium after bypassing the timed-out proxy.

@@ -1,4 +1,7 @@
 from fastapi.testclient import TestClient
+import time
+
+from api.db import ServiceHeartbeat, SessionLocal
 
 from api.main import app
 
@@ -18,6 +21,17 @@ def test_health_reports_archive_clients_and_unconfigured_chain():
     assert body["jpl_horizons"] is True
     assert body["breakthrough_listen"] is True
     assert body["genlayer_configured"] is False
+
+
+def test_readiness_reports_worker_failure_and_recovery():
+    assert client.get("/v1/ready").status_code == 503
+    with SessionLocal() as db:
+        db.add(ServiceHeartbeat(name="worker", updated=int(time.time()), detail="running"))
+        db.commit()
+    ready = client.get("/v1/ready")
+    assert ready.status_code == 200
+    assert ready.json()["checks"]["database"] is True
+    assert ready.json()["checks"]["worker"] is True
 
 
 def test_analysis_claim_and_review_keep_science_unconfirmed():

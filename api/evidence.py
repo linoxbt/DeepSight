@@ -4,6 +4,7 @@ import importlib.metadata
 import json
 import os
 import platform
+import shutil
 from functools import lru_cache
 from pathlib import Path
 
@@ -11,7 +12,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from api.db import ArtifactOwnerRow, ArtifactRow, SessionLocal
+from api.db import DATA_DIR, ArtifactOwnerRow, ArtifactRow, SessionLocal
 from api.auth import current_user
 
 router = APIRouter(prefix="/v1", tags=["evidence"])
@@ -57,10 +58,68 @@ def put_json(document: dict, owner: str | None = None) -> str:
     return digest
 
 
+def put_fits(path: Path) -> str:
+    """Pin the exact public MAST product used to derive a light curve."""
+    digest_hash = hashlib.sha256()
+    with path.open("rb") as stream:
+        while chunk := stream.read(1024 * 1024):
+            digest_hash.update(chunk)
+    digest = digest_hash.hexdigest()
+    with SessionLocal() as db:
+        if db.get(ArtifactRow, digest) is None:
+            store = _object_store()
+            if store:
+                client, bucket = store
+                try:
+                    client.upload_file(str(path), bucket, f"raw/{digest}.fits", ExtraArgs={"ContentType": "application/fits"})
+                except Exception as exc:
+                    raise HTTPException(503, "Raw FITS storage is unavailable") from exc
+            else:
+                folder = DATA_DIR / "raw"
+                folder.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(path, folder / f"{digest}.fits")
+            db.add(ArtifactRow(digest=digest, content=f"s3raw:{digest}" if store else f"raw:{digest}",
+                               media_type="application/fits", public=True))
+            try:
+                db.commit()
+            except IntegrityError:
+                db.rollback()
+    return digest
+
+
+def read_fits(digest: str) -> bytes:
+    with SessionLocal() as db:
+        row = db.get(ArtifactRow, digest)
+        if row is None or row.media_type != "application/fits":
+            raise HTTPException(404, "Raw FITS product not found")
+        location = row.content
+    if location.startswith("s3raw:"):
+        store = _object_store()
+        if store is None:
+            raise HTTPException(503, "Raw FITS storage is unavailable")
+        client, bucket = store
+        try:
+            body = client.get_object(Bucket=bucket, Key=f"raw/{digest}.fits")["Body"]
+            try:
+                data = body.read(64 * 1024 * 1024 + 1)
+            finally:
+                body.close()
+        except Exception as exc:
+            raise HTTPException(503, "Raw FITS storage is unavailable") from exc
+    else:
+        try:
+            data = (DATA_DIR / "raw" / f"{digest}.fits").read_bytes()
+        except FileNotFoundError as exc:
+            raise HTTPException(404, "Raw FITS product is missing") from exc
+    if len(data) > 64 * 1024 * 1024 or hashlib.sha256(data).hexdigest() != digest:
+        raise HTTPException(409, "Raw FITS product failed checksum verification")
+    return data
+
+
 def read(digest: str) -> str:
     with SessionLocal() as db:
         row = db.get(ArtifactRow, digest)
-        if row is None:
+        if row is None or row.media_type != "application/json":
             raise HTTPException(404, "Evidence artifact not found; legacy analyses must be rerun")
         content = row.content
     if content.startswith("s3:"):
@@ -69,7 +128,11 @@ def read(digest: str) -> str:
             raise HTTPException(503, "Evidence object storage is not configured")
         client, bucket = store
         try:
-            content = client.get_object(Bucket=bucket, Key=f"artifacts/{digest}.json")["Body"].read().decode("utf-8")
+            body = client.get_object(Bucket=bucket, Key=f"artifacts/{digest}.json")["Body"]
+            try:
+                content = body.read().decode("utf-8")
+            finally:
+                body.close()
         except Exception as exc:
             raise HTTPException(503, "Evidence object storage is unavailable") from exc
     if hashlib.sha256(content.encode()).hexdigest() != digest:
@@ -88,6 +151,7 @@ def environment() -> dict:
 def publish_manifest(db, manifest: dict) -> None:
     refs = list(manifest.get("artifacts", [])) + list(manifest.get("cross_matches", []))
     refs.append({"sha256": manifest.get("analysis", {}).get("environment_sha256")})
+    refs.append({"sha256": manifest.get("archive", {}).get("raw_source_sha256")})
     for ref in refs:
         digest = ref.get("sha256") or ref.get("query_snapshot_sha256")
         if digest:
@@ -110,4 +174,12 @@ def artifact(digest: str, request: Request):
     return Response(read(digest), media_type="application/json", headers={
         "ETag": f'"{digest}"', "Cache-Control": "public, max-age=31536000, immutable" if row.public else "private, no-store",
         "Content-Disposition": f'attachment; filename="{digest}.json"',
+    })
+
+
+@router.get("/raw/{digest}")
+def raw_product(digest: str):
+    return Response(read_fits(digest), media_type="application/fits", headers={
+        "ETag": f'"{digest}"', "Cache-Control": "public, max-age=31536000, immutable",
+        "Content-Disposition": f'attachment; filename="{digest}.fits"',
     })

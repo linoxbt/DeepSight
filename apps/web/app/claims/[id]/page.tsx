@@ -10,6 +10,7 @@ import { Shell } from "@/components/Shell";
 type Claim = {
   id: string;
   owner: string;
+  public: boolean;
   chain_protocol_result: string;
   chain_rationale: string;
   chain_execution: string;
@@ -108,6 +109,11 @@ export default function ClaimDetailPage() {
               {busy.endsWith("review-request") ? "Reviewing…" : "Run policy review"}
             </button>
           ) : null}
+          {owns && claim && !claim.public && !["RETRACTED", "SUPERSEDED"].includes(claim.status) ? (
+            <button className="ghost" type="button" onClick={() => act(`/v1/claims/${params.id}/publish`, { acknowledged: true })} disabled={busy !== ""}>
+              {busy.endsWith("publish") ? "Publishing…" : "Publish claim and evidence publicly"}
+            </button>
+          ) : null}
           {owns && claim && chainConfig?.relay_enabled && !claim.chain_claim_id && ["EVIDENCE_READY", "FINALIZED", "NEEDS_REVIEW"].includes(claim.status) ? (
             <ChainAction claimId={claim.id} action="submit" label="Sign and submit to StudioNet" onQueued={load} />
           ) : null}
@@ -133,7 +139,7 @@ export default function ClaimDetailPage() {
             <p className="mono">{claim.chain_protocol_result || "No chain decision"}</p>
             <p>{claim.chain_rationale}</p>
             <p>Consensus: {claim.chain_status} · Execution: {claim.chain_execution || "Not submitted"}</p>
-            <p className="fine muted">Chain actions require your signature. The DeepSight relay pays fees and is the on-chain claimant.</p>
+            <p className="fine muted">Signing a chain submission publishes this claim, its evidence, and your wallet address. The DeepSight relay pays fees and is the on-chain claimant.</p>
             {(claim.chain_contract_address || chainConfig?.contract_address) ? <p className="fine"><a href={studioContractUrl(claim.chain_contract_address || chainConfig!.contract_address!)} target="_blank" rel="noopener noreferrer">View Proof of Discovery on GenLayer StudioNet ↗</a></p> : null}
             {chainConfig && !chainConfig.relay_enabled ? <p className="callout">StudioNet submissions are temporarily unavailable. Existing chain records remain visible.</p> : null}
             {operations.map(op => <div key={op.id} className="event"><strong>{op.action} · {op.stage} · {op.status}</strong><p className="hash mono">{op.tx_hash ? <a href={studioTransactionUrl(op.tx_hash)} target="_blank" rel="noopener noreferrer">{op.tx_hash} ↗</a> : "Awaiting transaction"}</p>{op.error && <p role="alert">{op.error}</p>}</div>)}

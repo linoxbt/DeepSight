@@ -5,6 +5,22 @@ from starlette.requests import Request
 from api.limits import client_identity, rate_limit
 
 
+def test_queue_rejects_global_worker_saturation():
+    import time
+    from fastapi.testclient import TestClient
+    from api.db import JobRow, SessionLocal
+    from api.main import app
+    with SessionLocal() as db:
+        for index in range(8):
+            db.add(JobRow(id=f"job_busy_{index}", owner=f"0x{index:040x}", kind="analysis",
+                          payload="{}", status="running", created=int(time.time()), updated=int(time.time())))
+        db.commit()
+    with TestClient(app) as client:
+        response = client.post("/v1/jobs", json={"kind": "analysis", "target_id": "DS-SYN-001"})
+        assert response.status_code == 503
+        assert "busy" in response.json()["detail"]
+
+
 def _request(address: str, forwarded: str = "") -> Request:
     headers = [(b"x-forwarded-for", forwarded.encode())] if forwarded else []
     return Request({"type": "http", "method": "GET", "path": "/", "client": (address, 1234), "headers": headers})

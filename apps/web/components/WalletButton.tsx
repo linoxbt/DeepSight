@@ -23,6 +23,14 @@ export function WalletButton() {
     return () => { active = false; };
   }, []);
 
+  useEffect(() => {
+    if (!session || !isConnected || !address || session.toLowerCase() === address.toLowerCase()) return;
+    ++authGeneration.current;
+    api("/v1/auth/session", { method: "DELETE" })
+      .then(() => { setSession(""); window.dispatchEvent(new Event("deepsight-auth")); })
+      .catch(() => setError("The previous wallet session could not be cleared. Sign out before continuing."));
+  }, [session, isConnected, address]);
+
   async function signIn() {
     if (!address) { await open(); return; }
     ++authGeneration.current;

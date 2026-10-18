@@ -138,7 +138,7 @@ export default function LabPage() {
                   x={analysis.series_plot.time_days}
                   y={analysis.series_plot.flux}
                   xLabel="time (days)"
-                  yLabel="flux"
+                  yLabel="relative flux"
                   description={
                     analysis.target.synthetic
                       ? `${analysis.target.id} relative flux over ${analysis.metrics.n_samples} samples. Synthetic calibration series.`
@@ -152,7 +152,7 @@ export default function LabPage() {
                   x={analysis.folded.phase}
                   y={analysis.folded.flux}
                   xLabel="phase"
-                  yLabel="median flux"
+                  yLabel="median relative flux"
                   shade={{
                     from: 0.5 - analysis.metrics.duration_days / analysis.metrics.period_days / 2,
                     to: 0.5 + analysis.metrics.duration_days / analysis.metrics.period_days / 2,
@@ -166,7 +166,7 @@ export default function LabPage() {
                   x={analysis.periodogram.period_days}
                   y={analysis.periodogram.power}
                   xLabel="period (days)"
-                  yLabel="box power"
+                  yLabel="box power (relative)"
                   description={`Box-least-squares power. Best period ${analysis.metrics.period_days} days.`}
                 />
               </section>

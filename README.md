@@ -38,11 +38,12 @@ evidence under your own identity.
 
 ## Architecture
 
-- `api/auth.py`: wallet proofs, expiring sessions, origin checks, reviewer roles.
+- `api/auth.py`: wallet proofs, expiring sessions, origin checks, reviewer and operator roles.
 - `api/jobs.py`, `api/worker.py`: durable analysis queue, bounded concurrency per
   researcher, failed-worker detection, and chain reconciliation.
-- `api/evidence.py`: content-addressed exact JSON artifacts stored in the database.
-  Back up the database to retain evidence, sessions, jobs, and signed operations.
+- `api/evidence.py`: content-addressed JSON artifacts and pinned raw MAST FITS
+  products. Production stores both in an S3-compatible bucket. Back up the
+  database and bucket to retain evidence, sessions, jobs, and signed operations.
 - `api/main.py`: archive routes, research workflows, claim lifecycle, downloads.
 - `api/chain_ops.py`: claim-specific signed intents and durable chain outbox.
 - `api/chain_client.mjs`: pinned Node SDK bridge; broadcasts return immediately.
@@ -55,8 +56,8 @@ evidence under your own identity.
 Database-backed jobs avoid an additional queue service. Use PostgreSQL for shared
 multi-process deployments. The legacy synchronous analysis/import endpoints are
 retained for API compatibility and require authentication; the web app uses jobs.
-Raw archive files remain in the cache; canonical processed inputs and catalogue
-snapshots are retained as immutable database artifacts.
+Raw MAST products are pinned by SHA-256 and downloadable through `/v1/raw/{sha256}`.
+Processed inputs and catalogue snapshots are immutable evidence artifacts.
 
 ## Evidence and reproducibility
 
@@ -64,6 +65,8 @@ Claim detail exposes canonical manifests and complete JSON evidence bundles.
 Each embedded artifact preserves the exact bytes used for its SHA-256 hash.
 Transit bundles include the full processed curve, catalogue query snapshot,
 diagnostics, analysis parameters, package versions, and source checksums/code.
+The raw FITS product is referenced by hash and URL in the manifest and must be
+downloaded separately; the JSON bundle does not embed its binary bytes.
 Period grid resolution is labeled separately from statistical uncertainty.
 
 ```bash
@@ -84,6 +87,12 @@ Configure the same settings on API and worker:
 - `DEEPSIGHT_KEYSTORE`, `DEEPSIGHT_CHAIN_PASSWORD`: encrypted relay account access.
 - `DEEPSIGHT_RELAY_ENABLED=1`: explicitly enable broadcasting.
 - `DEEPSIGHT_REVIEWERS`: comma-separated wallet addresses allowed to add review notes.
+- `DEEPSIGHT_OPERATORS`: comma-separated wallet addresses authorized to reconcile
+  chain operations with unknown broadcast outcomes. An operator must document
+  independent nonce/explorer evidence before marking an attempt unbroadcast.
+- `DEEPSIGHT_GIT_COMMIT`: optional exact 40- or 64-character deployed source
+  revision. Railway's `RAILWAY_GIT_COMMIT_SHA` is used automatically when present;
+  otherwise evidence records a checksum of the running Python sources.
 
 The relay is **the on-chain claimant** and pays network fees. Each researcher
 signs a separate operation message binding their identity, origin, contract,
@@ -100,6 +109,15 @@ fails before returning a hash, the operation is marked `unknown` and blocks
 further mutations: it is never blindly replayed. An operator must inspect the
 network before resolving that uncertainty. The local status remains unchanged
 until a chain mutation is successfully finalized.
+`POST /v1/chain/operations/{id}/reconcile` accepts an observed transaction hash
+or a documented confirmation that the original attempt was never broadcast.
+The latter requeues the existing signed operation; it does not create a new intent.
+
+Claims are private drafts until the owner publishes them or signs a chain
+submission. Publication exposes the manifest, referenced evidence, and the
+researcher's wallet address. The publish action requires an explicit
+acknowledgement in the app. Existing submitted claims remain public after the
+`0004` migration.
 
 Installation and tests do not deploy contracts or submit live transactions.
 Local lint and mock-based integration tests are not proof of live network behavior.
@@ -138,6 +156,9 @@ adds a live NASA period-and-depth comparison for known TIC objects.
 The API applies versioned Alembic migrations before it starts; the worker
 requires the resulting schema revision. For separately deployed services, run
 `alembic upgrade head` once as a release step before starting either process.
+`/v1/health` is process liveness. `/v1/ready` checks the database, worker
+heartbeat, object store, and (in production) backup freshness; monitor the
+latter for HTTP 503. The current schema revision is `0005`.
 The relay is disabled in this default configuration. API and worker share the
 archive volume. The Python image includes Node and the pinned adapter packages.
 

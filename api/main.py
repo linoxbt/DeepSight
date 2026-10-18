@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import hashlib
+import time
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -26,8 +28,8 @@ from fastapi.responses import JSONResponse
 from api.archives import ArchiveError, query_gaia, query_horizons, resolve_cross_match
 from api.catalogue import CATALOGUE_VERSION, REFERENCE_CATALOGUE
 from api import chain, evidence
-from api.auth import router as auth_router, current_user, require_owner, require_reviewer, origin
-from api.db import AnalysisRow, AttestationRow, ClaimEventRow, ClaimRow, DatasetRow, RadioAnalysisRow, SessionLocal, init_db
+from api.auth import router as auth_router, current_user, optional_user, require_owner, require_reviewer, origin
+from api.db import AnalysisRow, AttestationRow, ClaimEventRow, ClaimRow, DatasetRow, RadioAnalysisRow, ServiceHeartbeat, SessionLocal, init_db
 from api.manifest import build_manifest, canonicalize, sha256_text
 from api.limits import rate_limit
 from api.mast import MastError, fetch_tess_light_curve, normalize_tic
@@ -89,6 +91,10 @@ class ClaimIn(BaseModel):
     acknowledged: bool = False
 
 
+class PublishIn(BaseModel):
+    acknowledged: bool = False
+
+
 class TapIn(BaseModel):
     tic: str = ""
     hostname: str = ""
@@ -129,15 +135,25 @@ def _now() -> str:
 
 
 def _git_commit() -> str:
+    configured = os.environ.get("DEEPSIGHT_GIT_COMMIT", "") or os.environ.get("RAILWAY_GIT_COMMIT_SHA", "")
+    if len(configured) in (40, 64) and all(character in "0123456789abcdefABCDEF" for character in configured):
+        return configured.lower()
     try:
-        return subprocess.check_output(
+        revision = subprocess.check_output(
             ["git", "rev-parse", "--short", "HEAD"],
             cwd=__file__ and str(__import__("pathlib").Path(__file__).resolve().parent.parent),
             text=True,
             stderr=subprocess.DEVNULL,
-        ).strip() or "unversioned"
+        ).strip()
+        if revision:
+            return revision
     except (subprocess.CalledProcessError, FileNotFoundError):
-        return "unversioned"
+        pass
+    # CLI-built Railway images omit .git. An immutable source fingerprint is
+    # still verifiable against the environment artifact, unlike "unversioned".
+    source = evidence.environment()["source_checksums"]
+    digest = hashlib.sha256(json.dumps(source, sort_keys=True).encode()).hexdigest()
+    return f"source-sha256:{digest}"
 
 
 def _public_target(target: dict[str, Any]) -> dict[str, Any]:
@@ -152,6 +168,8 @@ def _public_target(target: dict[str, Any]) -> dict[str, Any]:
         "summary": target["summary"],
         "tic": target.get("tic"),
         "sector": target.get("sector"),
+        "raw_sha256": target.get("raw_sha256"),
+        "raw_uri": target.get("raw_uri"),
     }
 
 
@@ -187,6 +205,13 @@ def _claim_or_404(session, claim_id: str) -> ClaimRow:
     return row
 
 
+def _visible_claim(session, claim_id: str, viewer: str | None) -> ClaimRow:
+    row = _claim_or_404(session, claim_id)
+    if not row.public and row.owner != viewer:
+        raise HTTPException(404, "Claim not found")
+    return row
+
+
 def _chain_note_default() -> str:
     if chain.configured():
         return "This record has not been submitted to GenLayer."
@@ -210,6 +235,7 @@ def _claim_out(row: ClaimRow) -> dict[str, Any]:
         "id": row.id,
         "analysis_id": row.analysis_id,
         "owner": row.owner,
+        "public": row.public,
         "chain_protocol_result": row.chain_protocol_result,
         "chain_rationale": row.chain_rationale,
         "chain_execution": row.chain_execution,
@@ -246,6 +272,7 @@ init_db()
 def health() -> dict[str, Any]:
     return {
         "status": "ok",
+        "scope": "api_process_only",
         "service": "deepsight",
         "pipeline": PIPELINE_NAME,
         "pipeline_version": PIPELINE_VERSION,
@@ -260,6 +287,41 @@ def health() -> dict[str, Any]:
         "genlayer_configured": chain.configured(),
         "policy": POLICY_CELESTIAL,
     }
+
+
+@app.get("/v1/ready")
+def readiness(response: Response) -> dict[str, Any]:
+    """Dependency readiness; liveness stays separate for platform restarts."""
+    now = int(time.time())
+    checks = {"database": False, "worker": False, "object_store": False,
+              "database_backup": False, "evidence_backup": False}
+    try:
+        with SessionLocal() as session:
+            session.execute(text("SELECT 1"))
+            checks["database"] = True
+            beats = {row.name: row.updated for row in session.scalars(select(ServiceHeartbeat)).all()}
+        checks["worker"] = now - beats.get("worker", 0) < 120
+        for name in ("database_backup", "evidence_backup"):
+            checks[name] = now - beats.get(name, 0) < 36 * 3600
+    except Exception:
+        pass
+    try:
+        store = evidence._object_store()
+        if store:
+            client, bucket = store
+            client.head_bucket(Bucket=bucket)
+            checks["object_store"] = True
+        else:
+            checks["object_store"] = os.environ.get("DEEPSIGHT_REQUIRE_OBJECT_STORE") != "1"
+    except Exception:
+        pass
+    required = ["database", "worker", "object_store"]
+    if os.environ.get("DEEPSIGHT_REQUIRE_OBJECT_STORE") == "1":
+        required += ["database_backup", "evidence_backup"]
+    ready = all(checks[key] for key in required)
+    if not ready:
+        response.status_code = 503
+    return {"status": "ok" if ready else "degraded", "checks": checks}
 
 
 @app.get("/v1/sources")
@@ -313,12 +375,15 @@ def import_dataset(body: ImportIn, request: Request = None, user: str = Depends(
     dataset_id = f"TIC-{tic}"
     with SessionLocal() as session:
         existing = session.get(DatasetRow, dataset_id)
-        if existing is not None:
+        if existing is not None and json.loads(existing.payload_json).get("raw_sha256"):
             return {"cached": True, "target": json.loads(existing.payload_json)}
     try:
         curve = fetch_tess_light_curve(tic, cache_dir=_mast_cache())
     except MastError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    if curve.get("raw_path"):
+        curve["raw_sha256"] = evidence.put_fits(__import__("pathlib").Path(curve["raw_path"]))
+        curve["raw_uri"] = f"/v1/raw/{curve['raw_sha256']}"
     public = _public_target(curve)
     public.update(
         {
@@ -338,8 +403,20 @@ def import_dataset(body: ImportIn, request: Request = None, user: str = Depends(
         created_at=_now(),
     )
     with SessionLocal() as session:
-        session.add(record)
-        session.commit()
+        existing = session.get(DatasetRow, dataset_id)
+        if existing is not None:
+            existing.payload_json = record.payload_json
+            existing.series_json = record.series_json
+        else:
+            session.add(record)
+        try:
+            session.commit()
+        except IntegrityError:
+            session.rollback()
+            existing = session.get(DatasetRow, dataset_id)
+            if existing is None:
+                raise
+            return {"cached": True, "target": json.loads(existing.payload_json)}
     return {"cached": False, "target": public}
 
 
@@ -560,11 +637,27 @@ def create_claim(body: ClaimIn, user: str = Depends(current_user)) -> dict[str, 
             updated_at=now,
         )
         session.add(claim)
-        evidence.publish_manifest(session, manifest)
         _add_event(session, claim.id, "EVIDENCE_READY", "Canonical manifest stored locally. Not submitted to GenLayer.")
         session.commit()
         session.refresh(claim)
         return {**_claim_out(claim), "manifest": manifest, "checklist": checklist}
+
+
+@app.post("/v1/claims/{claim_id}/publish")
+def publish_claim(claim_id: str, body: PublishIn, user: str = Depends(current_user)) -> dict[str, Any]:
+    if not body.acknowledged:
+        raise HTTPException(422, "Acknowledge that the manifest, evidence, and wallet address become public")
+    with SessionLocal() as session:
+        claim = _claim_or_404(session, claim_id)
+        require_owner(claim, user)
+        if claim.status in ("RETRACTED", "SUPERSEDED"):
+            raise HTTPException(409, "This claim cannot be published in its current state")
+        if not claim.public:
+            evidence.publish_manifest(session, json.loads(claim.manifest_json))
+            claim.public = True
+            _add_event(session, claim.id, "PUBLISHED", "Owner explicitly published the claim and its evidence.")
+            session.commit()
+        return _claim_out(claim)
 
 
 @app.post("/v1/claims/{claim_id}/review-request")
@@ -632,11 +725,12 @@ def supersede_claim(claim_id: str, user: str = Depends(current_user)) -> dict[st
 
 
 @app.get("/v1/claims")
-def list_claims(limit: int = Query(50, ge=1, le=100), cursor: str = "") -> dict[str, Any]:
+def list_claims(limit: int = Query(50, ge=1, le=100), cursor: str = "", viewer: str | None = Depends(optional_user)) -> dict[str, Any]:
     with SessionLocal() as session:
-        statement = select(ClaimRow)
+        visibility = or_(ClaimRow.public.is_(True), ClaimRow.owner == viewer) if viewer else ClaimRow.public.is_(True)
+        statement = select(ClaimRow).where(visibility)
         if cursor:
-            previous = session.get(ClaimRow, cursor)
+            previous = session.scalar(select(ClaimRow).where(ClaimRow.id == cursor, visibility))
             if previous is None:
                 raise HTTPException(422, "Invalid claim cursor")
             statement = statement.where(or_(ClaimRow.created_at < previous.created_at,
@@ -647,17 +741,17 @@ def list_claims(limit: int = Query(50, ge=1, le=100), cursor: str = "") -> dict[
 
 
 @app.get("/v1/claims/{claim_id}")
-def read_claim(claim_id: str) -> dict[str, Any]:
+def read_claim(claim_id: str, viewer: str | None = Depends(optional_user)) -> dict[str, Any]:
     with SessionLocal() as session:
-        claim = _claim_or_404(session, claim_id)
+        claim = _visible_claim(session, claim_id, viewer)
         manifest = json.loads(claim.manifest_json)
         return {**_claim_out(claim), "manifest": manifest}
 
 
 @app.get("/v1/claims/{claim_id}/policy-result")
-def policy_result(claim_id: str) -> dict[str, Any]:
+def policy_result(claim_id: str, viewer: str | None = Depends(optional_user)) -> dict[str, Any]:
     with SessionLocal() as session:
-        claim = _claim_or_404(session, claim_id)
+        claim = _visible_claim(session, claim_id, viewer)
         return {
             "claim_id": claim.id,
             "protocol_result": claim.protocol_result or None,
@@ -671,9 +765,9 @@ def policy_result(claim_id: str) -> dict[str, Any]:
 
 
 @app.get("/v1/claims/{claim_id}/timeline")
-def timeline(claim_id: str) -> dict[str, Any]:
+def timeline(claim_id: str, viewer: str | None = Depends(optional_user)) -> dict[str, Any]:
     with SessionLocal() as session:
-        _claim_or_404(session, claim_id)
+        _visible_claim(session, claim_id, viewer)
         events = session.scalars(
             select(ClaimEventRow).where(ClaimEventRow.claim_id == claim_id).order_by(ClaimEventRow.id)
         ).all()
@@ -687,9 +781,9 @@ def timeline(claim_id: str) -> dict[str, Any]:
 
 
 @app.get("/v1/claims/{claim_id}/finality")
-def finality(claim_id: str) -> dict[str, Any]:
+def finality(claim_id: str, viewer: str | None = Depends(optional_user)) -> dict[str, Any]:
     with SessionLocal() as session:
-        claim = _claim_or_404(session, claim_id)
+        claim = _visible_claim(session, claim_id, viewer)
         chain_status = claim.chain_status or "not_submitted"
         return {
             "claim_id": claim.id,
@@ -705,6 +799,7 @@ def finality(claim_id: str) -> dict[str, Any]:
 def discoveries() -> dict[str, Any]:
     with SessionLocal() as session:
         rows = session.scalars(select(ClaimRow).where(
+            ClaimRow.public.is_(True),
             ClaimRow.chain_protocol_result == "EVIDENCE_SUFFICIENT",
             ClaimRow.status == "FINALIZED", ClaimRow.chain_claim_id != "",
             ClaimRow.chain_status == "FINALIZED", ClaimRow.chain_execution == "SUCCESS",
@@ -845,7 +940,6 @@ def create_radio_claim(body: ClaimIn, user: str = Depends(current_user)) -> dict
             updated_at=now,
         )
         session.add(claim)
-        evidence.publish_manifest(session, built["document"])
         _add_event(
             session,
             claim.id,
@@ -861,6 +955,7 @@ def create_radio_claim(body: ClaimIn, user: str = Depends(current_user)) -> dict
 def review_queue() -> dict[str, Any]:
     with SessionLocal() as session:
         rows = session.scalars(select(ClaimRow).where(
+            ClaimRow.public.is_(True),
             ClaimRow.status == "NEEDS_REVIEW",
             or_(ClaimRow.review_resolution == "", ClaimRow.review_resolution.is_(None)),
         ).order_by(ClaimRow.updated_at.desc()).limit(100)).all()
@@ -903,9 +998,9 @@ def review_note(claim_id: str, body: ReviewNoteIn, user: str = Depends(current_u
 
 
 @app.get("/v1/research/attestations")
-def attestations(claim_id: str) -> dict[str, Any]:
+def attestations(claim_id: str, viewer: str | None = Depends(optional_user)) -> dict[str, Any]:
     with SessionLocal() as session:
-        _claim_or_404(session, claim_id)
+        _visible_claim(session, claim_id, viewer)
         rows = session.scalars(select(AttestationRow).where(AttestationRow.claim_id == claim_id).order_by(AttestationRow.created_at)).all()
         return {"claim_id": claim_id, "attestations": [
             {"id": row.id, "manifest_hash": row.manifest_hash, "reviewer": row.reviewer,
@@ -1019,6 +1114,8 @@ def _checklist(manifest: dict[str, Any], payload: dict[str, Any]) -> list[dict[s
         _item("depth", "Transit depth", "depth" in metrics, "relative flux"),
         _item("snr", "Signal-to-noise proxy", "snr_proxy" in metrics, "white-noise proxy, not CDPP"),
         _item("artifact", "Light-curve checksum", len(manifest["artifacts"][0]["sha256"]) == 64, manifest["artifacts"][0]["sha256"][:12] + "…"),
+        _item("raw_source", "Pinned raw MAST product", payload["target"]["synthetic"] or bool(manifest["archive"].get("raw_source_sha256")),
+              "Synthetic calibration or the exact downloaded FITS product is preserved"),
         _item("cross", "Catalogue snapshot", bool(manifest["cross_matches"][0]["query_snapshot_sha256"]), payload["cross_match"]["result"]),
         _item("false_positives", "Odd-even and secondary tests", {item.get("name") for item in payload.get("false_positive_tests", [])} >= {"odd_even", "secondary_eclipse"}, "documented"),
         _item("quality", "Quality warnings", not any(flag.get("severity") == "warning" for flag in payload.get("quality_flags", [])), "Warnings require human review", warn_on_fail=True),
@@ -1051,9 +1148,9 @@ def _item(code: str, label: str, ok: bool, detail: str, warn_on_fail: bool = Fal
 
 
 @app.get("/v1/claims/{claim_id}/manifest")
-def download_manifest(claim_id: str):
+def download_manifest(claim_id: str, viewer: str | None = Depends(optional_user)):
     with SessionLocal() as session:
-        claim = _claim_or_404(session, claim_id)
+        claim = _visible_claim(session, claim_id, viewer)
         return Response(claim.manifest_json, media_type="application/json", headers={
             "ETag": f'"{claim.manifest_hash}"',
             "Content-Disposition": f'attachment; filename="{claim.id}-manifest.json"',
@@ -1061,9 +1158,9 @@ def download_manifest(claim_id: str):
 
 
 @app.get("/v1/claims/{claim_id}/bundle")
-def download_bundle(claim_id: str):
+def download_bundle(claim_id: str, viewer: str | None = Depends(optional_user)):
     with SessionLocal() as session:
-        claim = _claim_or_404(session, claim_id)
+        claim = _visible_claim(session, claim_id, viewer)
         manifest = json.loads(claim.manifest_json)
         artifacts = {}
         refs = list(manifest.get("artifacts", [])) + list(manifest.get("cross_matches", []))

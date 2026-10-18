@@ -40,6 +40,15 @@ def current_user(request: Request) -> str:
         return session.address
 
 
+def optional_user(request: Request) -> str | None:
+    token = request.cookies.get(COOKIE, "")
+    if not token:
+        return None
+    with SessionLocal() as db:
+        session = db.get(AuthSession, hashlib.sha256(token.encode()).hexdigest())
+        return session.address if session and session.expires > int(time.time()) else None
+
+
 def require_owner(claim, user: str) -> None:
     if not claim.owner or claim.owner != user:
         raise HTTPException(403, "Only the authenticated claimant can change this claim")
@@ -49,6 +58,12 @@ def require_reviewer(user: str) -> None:
     reviewers = {v.strip().lower() for v in os.environ.get("DEEPSIGHT_REVIEWERS", "").split(",") if v.strip()}
     if user not in reviewers:
         raise HTTPException(403, "A designated reviewer account is required")
+
+
+def require_operator(user: str) -> None:
+    operators = {v.strip().lower() for v in os.environ.get("DEEPSIGHT_OPERATORS", "").split(",") if v.strip()}
+    if user not in operators:
+        raise HTTPException(403, "A designated chain operator account is required")
 
 
 class ChallengeIn(BaseModel):
