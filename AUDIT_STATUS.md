@@ -1,6 +1,6 @@
 # DeepSight audit remediation status
 
-Updated 2026-10-18. **Not production ready.** The public Netlify site uses a dedicated Railway project with a live Python API, worker, PostgreSQL and S3-compatible bucket. The v3 GenLayer contract is finalized and the relay is enabled. Scientific source reproduction, live v3 consensus, and live social-login verification remain open. This release was deployed as Railway API `327e946b-9880-48d8-9ebf-8d519f4c86e3`, worker `a16ab979-e434-4cd9-af8e-afec3391a428`, and Netlify `6ad4f06c1a9d82caf37d55d5`.
+Updated 2026-10-18. **Not production ready.** The public Netlify site uses a dedicated Railway project with a live Python API, worker, PostgreSQL and S3-compatible bucket. The v3 GenLayer contract is finalized and the relay is enabled. Scientific source reproduction, live v3 consensus, and live social-login verification remain open. This release was deployed as Railway API `327e946b-9880-48d8-9ebf-8d519f4c86e3`, worker `a16ab979-e434-4cd9-af8e-afec3391a428`, and Netlify `6ad50ff94123ca89e3b15f67`.
 
 ## Current remediation
 
@@ -39,6 +39,7 @@ Updated 2026-10-18. **Not production ready.** The public Netlify site uses a ded
 | Build identification and contract link | Evidence records a deployed commit SHA or source checksum; the frontend links to the deployed v3 contract. |
 | Service dependency health | `/v1/ready` checks database, worker heartbeat, object store, and production backup freshness. The worker persists each successful backup heartbeat. This does not replace external alert delivery. |
 | Worker queue saturation and charts | Global active/rate limits prevent unbounded job backlog. Light-curve and radio plots expose axis labels, hover values and CSV export. |
+| Netlify HTML hydration | Netlify inserts a newline and comment into the production document head. A small synchronous head script removes those injected nodes before React hydrates. Both a controlled injected-HTML browser test and the deployed production page had zero React page errors; the live wallet modal remained open and displayed email and Google controls. |
 
 ## Open blockers
 
@@ -48,8 +49,7 @@ Updated 2026-10-18. **Not production ready.** The public Netlify site uses a ded
 | High | The v3 known-TIC comparison has not passed a live consensus review. A v2 review hit a float-encoding error; v3 fixes the encoding, but the first v3 registration returned no hash. StudioNet also exhausted its daily read-call allowance. | Reconcile the uncertain registration, restore RPC quota/funding as needed, and complete a signed v3 register/review with verified on-chain rationale. |
 | High | The current v3 validator compares NASA catalogue period/depth; it does not recompute the submitted light curve from the pinned raw FITS or rerun BLS independently. | Design and deploy a bounded verifier for raw-source measurements, then prove it with a live consensus review. Until then label results as evidence review only. |
 | Medium | Railway PITR's default-size isolated restore failed; the independent daily database dump was restored successfully, but PITR and operational alerting remain unproven. | Increase restore volume capacity, rerun PITR restore, and add backup failure/staleness alerts. |
-| High | Reown email/Google consent remains unverified live. EIP-1271 support has only mocked-RPC coverage. | Complete a real social-wallet sign-in and claim signature on the hosted site, including a deployed smart-account case if Reown issues one. |
-| High | Netlify injects a newline and marketing comment into the HTML head after build. A controlled browser comparison showed this causes React hydration error `#418` on the hosted landing page; the local production build has no such error. | Disable Netlify's response mutation or serve an unmodified document before relying on the hosted frontend for production wallet flows. A head-level `suppressHydrationWarning` experiment did not resolve it and was reverted. |
+| High | The live Reown modal displays email and Google on the allowlisted primary domain after asynchronous initialization, but neither consent flow nor a social-wallet signature has been completed end to end. EIP-1271 support has only mocked-RPC coverage. | Complete a real social-wallet sign-in and claim signature on the hosted site, including a deployed smart-account case if Reown issues one. Preview domains are not in Reown's allowed origins and correctly reject embedded-wallet login. |
 | High | `DEEPSIGHT_OPERATORS` and `DEEPSIGHT_REVIEWERS` are not configured in the production API; operator reconciliation and designated human review cannot be exercised by real staff accounts. | Assign controlled wallet addresses, set the variables on API and worker where needed, then run signed live role tests. |
 | Medium | Image upload is a private visual notebook and does not process FITS data or detect planets. | Define and implement a scientifically valid image workflow only if required by the product. |
 | Medium | MCP, persistent collaborative notebooks and Redis from the broader architecture are absent. | Prioritize after the deployed TESS workflow and evidence chain are reliable. |

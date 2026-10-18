@@ -18,7 +18,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <head>
         <script
           dangerouslySetInnerHTML={{
-            __html: "try{if(localStorage.getItem('deepsight-theme')==='observation')document.documentElement.dataset.theme='observation'}catch(e){}",
+            __html: "try{if(localStorage.getItem('deepsight-theme')==='observation')document.documentElement.dataset.theme='observation'}catch(e){};for(const node of Array.from(document.head.childNodes)){if(node.nodeType===8&&node.textContent?.includes('This site is hosted on Netlify')){if(node.previousSibling?.nodeType===3&&/^\\s*$/.test(node.previousSibling.textContent||''))node.previousSibling.remove();node.remove()}}",
           }}
         />
       </head>
