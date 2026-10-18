@@ -8,7 +8,7 @@ Updated 2026-10-18. **Deployed, but not production ready.** The public Netlify s
 - A live v2 TESS review failed on GenLayer's inability to encode floating-point TAP values; v3 fixes that boundary. A fresh v3 TESS analysis and signed claim were created, but StudioNet returned no transaction hash at registration. The outbox marked it `unknown` and did not replay it. The relay pending nonce remained 15, immediately after v3 deployment nonce 14. A successful live v3 archive review has **not** yet been demonstrated.
 - Live disposable-wallet v2 submit/review, supersession and retraction finalized on StudioNet. Claim `clm_3ce8c291c763` became `SUPERSEDED` by `clm_704cc4eb15eb`, which became `RETRACTED`.
 - EOA and deployed EIP-1271 message signature verification are wired to sign-in and each relay intent. Unit tests cover both formats and RPC failure. Reown email/Google consent has not been completed live, so social login remains unverified.
-- Railway Postgres PITR is enabled. A separate PITR restore failed because its default 500 MB volume filled during WAL replay. A portable production SQL dump restored into isolated PostgreSQL with 2 claims, 4 analyses, 7 artifacts and migration `0003`. An 11-object evidence copy passed SHA-256 checks. Both archives were uploaded to a separate private recovery bucket and read back. The worker now runs a daily copy; its latest logged snapshot verified 12 objects. Railway scheduled database backups are unavailable on this workspace plan.
+- Railway Postgres PITR is enabled. A separate PITR restore failed because its default 500 MB volume filled during WAL replay. The worker now makes daily, checksum-verified evidence and PostgreSQL custom-format snapshots in a separate private bucket. Its first scheduled database dump restored into isolated PostgreSQL 18 with 8 claims, 9 analyses, 10 artifacts, 9 chain operations, and migration `0003`; the latest evidence copy verified 13 objects. Railway scheduled backups are unavailable on this workspace plan.
 - The old UI's post-finality appeal action was invalid under GenLayer's appeal window. The no-op live appeal was marked failed and the UI/API no longer offer that action. A correct pre-finality appeal workflow remains unimplemented.
 
 ## Verified fixes
@@ -27,7 +27,7 @@ Updated 2026-10-18. **Deployed, but not production ready.** The public Netlify s
 | Large unpaged record queries | Claims cursor pagination, bounded discoveries/reviews queries, frontend load-more control. |
 | Login and wallet UI race | Session restore cannot overwrite a newer sign-in/out; connected-wallet account control remains distinct from app sign-out; browser tests. |
 | Image notebook was browser-only | Authenticated, owner-scoped JPG/PNG/WebP upload, private file download, saved notes/marks, checksum validation, failed-commit cleanup, browser save/reopen check, and retry feedback. This is a visual notebook, not scientific image analysis. |
-| Database schema and durable evidence storage | Alembic revisions 0001–0003 applied on Railway Postgres; S3-backed private image upload, read and checksum passed through the public site. Backup/restore drill remains open. |
+| Database schema and durable evidence storage | Alembic revisions 0001–0003 applied on Railway Postgres; S3-backed private image upload, read and checksum passed through the public site. Daily independent object and database backups passed read-back verification, and the scheduled database dump restored into isolated PostgreSQL 18. |
 | GenLayer result parser | Handles `FINISHED_WITH_RETURN`; Node test. Invalid post-finality appeal was removed. |
 | Live GenLayer integration | Disposable EOA signed a hosted intent; worker registered `pod-1` on the deployed contract, finalized evidence review as `EVIDENCE_SUFFICIENT`, and finalized a challenge signed by a second wallet. The API reflected all three transaction outcomes. |
 | Netlify build configuration | `API_PROXY` points to the healthy Railway API; public `/v1/health` returns 200. |
@@ -40,7 +40,7 @@ Updated 2026-10-18. **Deployed, but not production ready.** The public Netlify s
 | --- | --- | --- |
 | High | Validators compare known TIC period and depth against NASA TAP, but do not reprocess raw TESS pixels or independently verify the artifact contents; radio measurements have no independent archive comparison. | Build a reproducible source-data verification service or validator-bounded proof before treating the measurements themselves as verified. |
 | High | The v3 known-TIC comparison has not passed a live consensus review. A v2 review hit a float-encoding error; v3 fixes the encoding, but the first v3 registration returned no hash. StudioNet also exhausted its daily read-call allowance. | Reconcile the uncertain registration, restore RPC quota/funding as needed, and complete a signed v3 register/review with verified on-chain rationale. |
-| High | Railway PITR's default-size isolated restore failed; portable restore passed, but database backup automation and operational alerts are not proven. | Increase restore volume capacity, rerun PITR restore, and add an independent scheduled database export/monitor. |
+| Medium | Railway PITR's default-size isolated restore failed; the independent daily database dump was restored successfully, but PITR and operational alerting remain unproven. | Increase restore volume capacity, rerun PITR restore, and add backup failure/staleness alerts. |
 | High | Reown email/Google consent remains unverified live. EIP-1271 support has only mocked-RPC coverage. | Complete a real social-wallet sign-in and claim signature on the hosted site, including a deployed smart-account case if Reown issues one. |
 | Medium | Image upload is a private visual notebook and does not process FITS data or detect planets. | Define and implement a scientifically valid image workflow only if required by the product. |
 | Medium | MCP, persistent collaborative notebooks and Redis from the broader architecture are absent. | Prioritize after the deployed TESS workflow and evidence chain are reliable. |
@@ -49,7 +49,7 @@ Updated 2026-10-18. **Deployed, but not production ready.** The public Netlify s
 
 ## Verification
 
-- Latest run after v3: `uv run pytest -q api/tests`: 77 passed.
+- Latest run after database backup changes: `uv run pytest -q api/tests`: 79 passed.
 - `node --test api/tests/chain_execution.test.mjs`: passed.
 - `npm run build --prefix apps/web`: passed; `npm run test:browser --prefix apps/web`: 11 passed after the final test cleanup. Browser tests mock API data.
 - PostgreSQL 16: Alembic upgraded through 0003; `DEEPSIGHT_REQUIRE_MIGRATIONS=1` startup check passed. SQLite fresh/upgrade checks passed.

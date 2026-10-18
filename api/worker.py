@@ -5,13 +5,14 @@ from sqlalchemy import update
 from api.db import init_db, SessionLocal, JobRow
 from api.jobs import run_one
 from api.chain_ops import execute_one
-from api.backup import configured as backup_configured, snapshot as backup_snapshot
+from api.backup import configured as backup_configured, snapshot as backup_snapshot, database_snapshot
 
 
 def main():
     logging.basicConfig(level=logging.INFO)
     init_db()
-    next_backup_check = 0.0
+    next_evidence_backup = 0.0
+    next_database_backup = 0.0
     while True:
         # Bound recovery: never blindly replay a blockchain write.
         with SessionLocal() as db:
@@ -20,13 +21,23 @@ def main():
         try:
             execute_one()
             run_one()
-            if time.monotonic() >= next_backup_check and backup_configured():
+            if backup_configured() and time.monotonic() >= next_database_backup:
+                try:
+                    database = database_snapshot()
+                    logging.info("Database recovery snapshot: date=%s bytes=%s sha256=%s", database["date"], database["bytes"], database["sha256"])
+                    next_database_backup = time.monotonic() + 86400
+                except Exception:
+                    logging.exception("Database recovery snapshot failed")
+                    next_database_backup = time.monotonic() + 3600
+            # Artifacts are immutable and written before their database rows.
+            # Copying them after the database snapshot covers references in it.
+            if backup_configured() and time.monotonic() >= next_evidence_backup:
                 try:
                     logging.info("Evidence recovery snapshot: %s", backup_snapshot())
-                    next_backup_check = time.monotonic() + 86400
+                    next_evidence_backup = time.monotonic() + 86400
                 except Exception:
                     logging.exception("Evidence recovery snapshot failed")
-                    next_backup_check = time.monotonic() + 3600
+                    next_evidence_backup = time.monotonic() + 3600
             time.sleep(2)
         except Exception:
             logging.exception("Worker iteration failed")

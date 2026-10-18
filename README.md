@@ -152,14 +152,20 @@ objects. `DEEPSIGHT_S3_ENDPOINT` selects an S3-compatible service. Set
 back to database text when the bucket is missing. Keep independent, tested
 backups of PostgreSQL and the bucket; object checksums are verified on read.
 In production, Railway PITR is enabled for Postgres. The worker copies evidence
-objects daily to a separate recovery bucket and verifies each copy before
-writing the dated completion manifest. Set `DEEPSIGHT_BACKUP_ENDPOINT`,
+objects daily and creates a PostgreSQL 18 custom-format dump in a separate
+recovery bucket. Each is read back and checksum-verified before its dated
+completion manifest is written. Set `DEEPSIGHT_BACKUP_ENDPOINT`,
 `DEEPSIGHT_BACKUP_BUCKET`, `DEEPSIGHT_BACKUP_ACCESS_KEY_ID`, and
-`DEEPSIGHT_BACKUP_SECRET_ACCESS_KEY` on the worker. A portable SQL dump and
-evidence ZIP were restored and checked on 2026-10-18. Railway's separate PITR
-restore failed on its default 500 MB volume; increase restore volume capacity
-before relying on that path. The current workspace plan does not allow Railway
-scheduled database backups, so keep PITR and the portable dump procedure.
+`DEEPSIGHT_BACKUP_SECRET_ACCESS_KEY` on the worker. On 2026-10-18, the first
+scheduled database dump was downloaded, checked, and restored into an isolated
+PostgreSQL 18 instance with migration `0003` and expected row counts. To restore
+one of these dumps, download `database/YYYY-MM-DD.dump` and its manifest,
+verify the file SHA-256, then use `pg_restore --no-owner --no-privileges
+--exit-on-error -d <empty-database> database/YYYY-MM-DD.dump` against a matching
+PostgreSQL version. Railway's separate PITR restore failed on its default
+500 MB volume; increase restore volume capacity before relying on that path.
+The current workspace plan does not allow Railway scheduled backups, so the
+worker's tested dump is the independent recovery path.
 If the API is behind a reverse proxy, set `DEEPSIGHT_TRUSTED_PROXY_CIDRS` to
 the proxy's exact source network before using `X-Forwarded-For` for rate limits.
 

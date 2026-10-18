@@ -3,11 +3,16 @@
 import hashlib
 import json
 import os
+import subprocess
+import tempfile
 from datetime import datetime, timezone
+from pathlib import Path
+from urllib.parse import unquote, urlsplit, urlunsplit
 
 import boto3
 
 MAX_OBJECT_BYTES = 100 * 1024 * 1024
+MAX_DATABASE_BYTES = 1024 * 1024 * 1024
 
 
 def _client(bucket_prefix: str):
@@ -61,3 +66,65 @@ def snapshot(day: str | None = None) -> dict:
                       Body=json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode(),
                       ContentType="application/json")
     return {"date": day, "objects": len(rows), "bytes": sum(item["bytes"] for item in rows)}
+
+
+def database_snapshot(day: str | None = None) -> dict:
+    """Save a consistent PostgreSQL custom-format dump outside the live bucket."""
+    if not configured():
+        raise RuntimeError("Recovery bucket is not configured")
+    raw_url = os.environ.get("DATABASE_URL", "")
+    parsed = urlsplit(raw_url)
+    if parsed.scheme not in ("postgresql", "postgres") or not parsed.hostname or not parsed.path.strip("/"):
+        raise RuntimeError("PostgreSQL DATABASE_URL is required for a database snapshot")
+    day = day or datetime.now(timezone.utc).date().isoformat()
+    username = parsed.username or ""
+    host = parsed.hostname or ""
+    if ":" in host:
+        host = f"[{host}]"
+    authority = (username + "@" if username else "") + host + (f":{parsed.port}" if parsed.port else "")
+    safe_url = urlunsplit((parsed.scheme, authority, parsed.path, parsed.query, ""))
+    environment = os.environ.copy()
+    environment["PGPASSWORD"] = unquote(parsed.password or "")
+    backup, bucket = _client("DEEPSIGHT_BACKUP")
+    key = f"database/{day}.dump"
+    with tempfile.TemporaryDirectory(prefix="deepsight-db-backup-") as directory:
+        path = Path(directory) / "database.dump"
+        try:
+            completed = subprocess.run(
+                ["pg_dump", "--format=custom", "--no-owner", "--no-privileges", "--file", str(path), safe_url],
+                env=environment, capture_output=True, timeout=300, check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise RuntimeError("PostgreSQL dump could not complete") from exc
+        if completed.returncode != 0 or not path.is_file():
+            raise RuntimeError("PostgreSQL dump failed; recovery marker was not written")
+        size = path.stat().st_size
+        if not 0 < size <= MAX_DATABASE_BYTES:
+            raise RuntimeError("PostgreSQL dump is empty or exceeds the backup limit")
+        with path.open("rb") as stream:
+            if stream.read(5) != b"PGDMP":
+                raise RuntimeError("PostgreSQL dump has an invalid custom-format header")
+        digest = _file_sha256(path)
+        with path.open("rb") as stream:
+            backup.upload_fileobj(stream, bucket, key, ExtraArgs={"Metadata": {"sha256": digest}})
+        remote_digest = hashlib.sha256()
+        body = backup.get_object(Bucket=bucket, Key=key)["Body"]
+        try:
+            while chunk := body.read(1024 * 1024):
+                remote_digest.update(chunk)
+        finally:
+            body.close()
+        if remote_digest.hexdigest() != digest:
+            raise RuntimeError("Database recovery dump failed checksum")
+        manifest = {"date": day, "key": key, "sha256": digest, "bytes": size, "format": "pg_dump-custom"}
+        backup.put_object(Bucket=bucket, Key=f"database/{day}.manifest.json",
+                          Body=json.dumps(manifest, sort_keys=True).encode(), ContentType="application/json")
+        return manifest
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        while chunk := stream.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
