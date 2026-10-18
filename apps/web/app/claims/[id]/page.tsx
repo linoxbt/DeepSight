@@ -23,6 +23,7 @@ type Claim = {
   chain_status: string;
   chain_note: string;
   chain_claim_id: string;
+  chain_contract_address: string;
   chain_tx: string;
   target_id: string;
   policy_version: string;
@@ -133,7 +134,7 @@ export default function ClaimDetailPage() {
             <p>{claim.chain_rationale}</p>
             <p>Consensus: {claim.chain_status} · Execution: {claim.chain_execution || "Not submitted"}</p>
             <p className="fine muted">Chain actions require your signature. The DeepSight relay pays fees and is the on-chain claimant.</p>
-            {chainConfig?.contract_address ? <p className="fine"><a href={studioContractUrl(chainConfig.contract_address)} target="_blank" rel="noopener noreferrer">View Proof of Discovery on GenLayer StudioNet ↗</a></p> : null}
+            {(claim.chain_contract_address || chainConfig?.contract_address) ? <p className="fine"><a href={studioContractUrl(claim.chain_contract_address || chainConfig!.contract_address!)} target="_blank" rel="noopener noreferrer">View Proof of Discovery on GenLayer StudioNet ↗</a></p> : null}
             {chainConfig && !chainConfig.relay_enabled ? <p className="callout">StudioNet submissions are temporarily unavailable. Existing chain records remain visible.</p> : null}
             {operations.map(op => <div key={op.id} className="event"><strong>{op.action} · {op.stage} · {op.status}</strong><p className="hash mono">{op.tx_hash ? <a href={studioTransactionUrl(op.tx_hash)} target="_blank" rel="noopener noreferrer">{op.tx_hash} ↗</a> : "Awaiting transaction"}</p>{op.error && <p role="alert">{op.error}</p>}</div>)}
           </section>
@@ -165,12 +166,6 @@ export default function ClaimDetailPage() {
               {claim.chain_claim_id && chainConfig?.relay_enabled && <ChainAction claimId={claim.id} action="challenge" reason={reason} label="Sign challenge" onQueued={load} />}
             </section>
           ) : null}
-          {owns && chainConfig?.relay_enabled && claim.chain_claim_id && claim.chain_tx.includes("0x") && (
-            <section className="panel"><h2>Appeal</h2>
-              <p className="fine muted">Choose the transaction to appeal. Availability and fees depend on the network.</p>
-              {Object.entries(JSON.parse(claim.chain_tx || "{}") as Record<string, string>).map(([kind, hash]) => <ChainAction key={kind} claimId={claim.id} action="appeal" txHash={hash} label={`Sign appeal: ${kind}`} onQueued={load} />)}
-            </section>
-          )}
           {owns && !["RETRACTED", "SUPERSEDED"].includes(claim.status) && (
             <section className="panel actions">
               {claim.chain_claim_id ? (chainConfig?.relay_enabled && <ChainAction claimId={claim.id} action="retract" label="Sign retraction" onQueued={load} />) : <button className="ghost" disabled={!!busy} onClick={() => act(`/v1/claims/${params.id}/retract`)}>Retract local claim</button>}

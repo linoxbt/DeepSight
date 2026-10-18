@@ -10,7 +10,7 @@ const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const origin = process.env.DEEPSIGHT_ORIGIN || "https://deepsight-evidence.netlify.app";
 const keystore = process.env.DEEPSIGHT_KEYSTORE || resolve(homedir(), ".genlayer/keystores/deepsight-studio.json");
 const passwordFile = process.env.DEEPSIGHT_PASSWORD_FILE || resolve(root, "data/genlayer.password");
-const recordPath = resolve(root, "deployments/studionet.json");
+const recordPath = resolve(root, process.env.DEEPSIGHT_DEPLOYMENT_RECORD || "deployments/studionet-v3.json");
 
 if (!origin.startsWith("https://") || /\/.+\//.test(origin.slice(8))) {
   throw new Error("DEEPSIGHT_ORIGIN must be a bare HTTPS origin");

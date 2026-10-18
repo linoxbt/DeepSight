@@ -57,7 +57,7 @@ def build_manifest(
         "claimant_address": claimant_address,
         "researcher_address": researcher_address,
         "claim_type": "celestial_object_evidence",
-        "policy_version": "celestial-v1",
+        "policy_version": "celestial-v3",
         "target": {
             "id": target["id"],
             "ra_deg": target["ra_deg"],

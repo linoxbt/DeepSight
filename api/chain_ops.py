@@ -5,12 +5,11 @@ claimant. The signed intent binds the researcher's identity to the exact manifes
 An uncertain broadcast is never automatically repeated.
 """
 import json
+import logging
 import os
 import secrets
 import time
 
-from eth_account import Account
-from eth_account.messages import encode_defunct
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, select, update
@@ -19,20 +18,35 @@ from api import chain, evidence
 from api.auth import current_user, require_owner, origin
 from api.db import ChainIntent, ChainOperation, ClaimRow, ClaimEventRow, SessionLocal
 from api.manifest import canonicalize, sha256_text
+from api.signatures import valid_message_signature
 
 router = APIRouter(prefix="/v1", tags=["chain"])
 ACTIVE = ("queued", "broadcasting", "submitted", "reconciling", "unknown")
+LEGACY_CONTRACT = "0x6B6dC06981Aa6903434dBab601D8b61c5fD57ff8"
+V2_CONTRACT = "0x0E564b1d1767863FA3B73c6d07e3af73508CbB92"
+
+
+def config_for_claim(claim):
+    cfg = chain.load_config()
+    if not cfg:
+        return None
+    policy = json.loads(claim.manifest_json).get("policy_version", "")
+    if policy in ("celestial-v1", "signal-v1"):
+        return {**cfg, "address": os.environ.get("DEEPSIGHT_LEGACY_CONTRACT_ADDRESS", LEGACY_CONTRACT)}
+    if policy in ("celestial-v2", "signal-v2"):
+        return {**cfg, "address": os.environ.get("DEEPSIGHT_V2_CONTRACT_ADDRESS", V2_CONTRACT)}
+    return cfg
 
 
 class IntentIn(BaseModel):
-    action: str = Field(pattern="^(submit|challenge|retract|supersede|appeal)$")
+    action: str = Field(pattern="^(submit|challenge|retract|supersede)$")
     reason: str = Field(default="", max_length=400)
     tx_hash: str = Field(default="", max_length=80)
 
 
 class AuthorizationIn(BaseModel):
     intent_id: str = Field(min_length=48, max_length=48)
-    signature: str = Field(pattern=r"^(0x)?[0-9a-fA-F]{130}$")
+    signature: str = Field(pattern=r"^(?:0x)?(?:[0-9a-fA-F]{2}){1,2048}$")
 
 
 def claim_for(db, claim_id):
@@ -50,7 +64,6 @@ def eligible(claim, action, actor):
         "challenge": ("FINALIZED", "NEEDS_REVIEW"),
         "retract": ("EVIDENCE_READY", "FINALIZED", "NEEDS_REVIEW", "CHALLENGED"),
         "supersede": ("FINALIZED", "NEEDS_REVIEW", "CHALLENGED"),
-        "appeal": ("FINALIZED", "NEEDS_REVIEW", "CHALLENGED", "EVIDENCE_READY"),
     }
     if claim.status not in allowed[action]:
         raise HTTPException(409, f"Cannot {action} a claim in status {claim.status}")
@@ -84,14 +97,16 @@ def config():
 
 @router.post("/claims/{claim_id}/intent")
 def prepare(claim_id: str, body: IntentIn, user: str = Depends(current_user)):
-    cfg = chain.load_config()
-    if cfg is None or os.environ.get("DEEPSIGHT_RELAY_ENABLED") != "1":
+    if os.environ.get("DEEPSIGHT_RELAY_ENABLED") != "1":
         raise HTTPException(503, "The chain relay is not configured and enabled")
     relay_address = os.environ.get("DEEPSIGHT_RELAY_ADDRESS", "").lower()
     if len(relay_address) != 42 or not relay_address.startswith("0x") or any(c not in "0123456789abcdef" for c in relay_address[2:]):
         raise HTTPException(503, "Set DEEPSIGHT_RELAY_ADDRESS to the submitting relay wallet address")
     with SessionLocal() as db:
         claim = claim_for(db, claim_id)
+        cfg = config_for_claim(claim)
+        if cfg is None:
+            raise HTTPException(503, "The chain relay is not configured and enabled")
         eligible(claim, body.action, user)
         idle(db, claim_id)
         payload = body.model_dump()
@@ -118,13 +133,6 @@ def prepare(claim_id: str, body: IntentIn, user: str = Depends(current_user)):
                 evidence.read(item["sha256"])
         if body.action == "challenge" and len(body.reason.strip()) < 20:
             raise HTTPException(422, "Provide a challenge reason of at least 20 characters")
-        if body.action == "appeal" and body.tx_hash not in json.loads(claim.chain_tx or "{}").values():
-            raise HTTPException(422, "Transaction does not belong to this claim")
-        if body.action == "appeal":
-            previous = chain.invoke({"action": "receipt", "tx_hash": body.tx_hash}, cfg)
-            if not previous.get("ok") or previous.get("status") != "FINALIZED":
-                raise HTTPException(409, "The appealed transaction must be finalized and readable")
-            payload["prior_rounds"] = int(previous.get("rounds", 0))
         if body.action == "supersede":
             manifest = json.loads(claim.manifest_json)
             if manifest.get("claimant_address") != relay_address or manifest.get("researcher_address") != user:
@@ -156,15 +164,11 @@ def authorize(claim_id: str, body: AuthorizationIn, user: str = Depends(current_
         claim = claim_for(db, claim_id)
         eligible(claim, intent.action, user)
         idle(db, claim_id)
-        cfg = chain.load_config()
+        cfg = config_for_claim(claim)
         payload = json.loads(intent.payload)
         if not cfg or os.environ.get("DEEPSIGHT_RELAY_ENABLED") != "1" or cfg["address"] != payload["contract"] or payload["manifest_hash"] != claim.manifest_hash:
             raise HTTPException(409, "Configuration or claim changed; sign a new authorization")
-        try:
-            signer = Account.recover_message(encode_defunct(text=intent.message), signature=body.signature).lower()
-        except Exception as exc:
-            raise HTTPException(401, "Invalid operation signature") from exc
-        if signer != user:
+        if not valid_message_signature(user, intent.message, body.signature):
             raise HTTPException(403, "Operation signature belongs to another wallet")
         # Compare-and-set on the claim also serializes different intents.
         previous_status = claim.chain_status
@@ -222,7 +226,7 @@ def execute_one():
             return False
         claim = claim_for(db, op.claim_id)
         payload = json.loads(op.payload)
-        cfg = chain.load_config()
+        cfg = config_for_claim(claim)
         if not cfg or cfg["address"] != payload["contract"]:
             op.error = "Relay configuration differs from the signed contract; operation is paused."
             op.updated = int(time.time()) + 60
@@ -239,7 +243,15 @@ def execute_one():
                 result = chain.invoke(_command(op, claim, payload), cfg)
                 if not result.get("ok") or not result.get("hash"):
                     # Even an RPC failure can occur after a broadcast. Preserve uncertainty.
-                    op.status, op.error = "unknown", "No transaction hash returned. Operator reconciliation required."
+                    detail = str(result.get("error", "")).lower()
+                    if "rate limit" in detail:
+                        cause = "StudioNet RPC rate limit"
+                    elif "insufficient funds" in detail:
+                        cause = "relay account has insufficient funds"
+                    else:
+                        cause = "RPC or adapter failure"
+                    op.status, op.error = "unknown", f"No transaction hash returned ({cause}). Operator reconciliation required."
+                    logging.warning("GenLayer broadcast produced no hash: %s", cause)
                 else:
                     op.tx_hash, op.status = result["hash"], "submitted"
                     txs = json.loads(claim.chain_tx or "{}")
@@ -296,7 +308,7 @@ def _command(op, claim, payload):
         replacement_source = origin()+f"/v1/claims/{payload['replacement_id']}/manifest"
         method, args = "supersede_claim", [claim.chain_claim_id, payload["replacement_hash"], replacement_source]
     else:
-        return {"action": "appeal", "tx_hash": payload["tx_hash"]}
+        raise RuntimeError(f"Unsupported chain operation stage: {op.stage}")
     return {"action": "broadcast", "method": method, "args": args}
 
 
@@ -324,15 +336,6 @@ def _finish(db, op, claim, cfg, payload):
         raise RuntimeError("Contract claim state has not caught up with the finalized transaction")
     if op.stage == "supersede" and not state.get("superseded_by"):
         raise RuntimeError("Contract replacement is not readable yet")
-    if op.stage == "appeal":
-        appealed = chain.invoke({"action": "receipt", "tx_hash": payload["tx_hash"]}, cfg)
-        if (not appealed.get("ok") or appealed.get("status") != "FINALIZED"
-                or int(appealed.get("rounds", 0)) <= int(payload["prior_rounds"])):
-            raise RuntimeError("Appealed transaction is not finalized")
-        # An appeal changes the consensus outcome of its target transaction;
-        # a readable claim alone does not prove that the appeal took effect.
-        if appealed.get("execution") not in ("SUCCESS", "FAILED"):
-            raise RuntimeError("Appealed transaction outcome is not yet known")
     if op.stage == "supersede":
         replacement_view = chain.invoke({"action": "read", "method": "read_claim_by_manifest", "args": [payload["replacement_hash"]]}, cfg)
         replacement_state = replacement_view.get("result")

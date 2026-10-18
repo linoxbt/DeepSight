@@ -10,6 +10,7 @@ from genlayer import *
 from dataclasses import dataclass
 import hashlib
 import json
+from urllib.parse import quote
 
 
 ERROR_EXPECTED = "[EXPECTED]"
@@ -25,8 +26,8 @@ STATUS_CHALLENGED = "CHALLENGED"
 STATUS_SUPERSEDED = "SUPERSEDED"
 STATUS_RETRACTED = "RETRACTED"
 
-POLICY_CELESTIAL = "celestial-v1"
-POLICY_SIGNAL = "signal-v1"
+POLICY_CELESTIAL = "celestial-v3"
+POLICY_SIGNAL = "signal-v3"
 TYPE_CELESTIAL = "celestial_object_evidence"
 TYPE_SIGNAL = "radio_signal_integrity"
 
@@ -158,6 +159,16 @@ class ProofOfDiscovery(gl.Contract):
         result, rationale = _evaluate(
             published, claim.claim_type, claim.policy_version, claim.target_id
         )
+        if result == RESULT_REVIEW and claim.claim_type == TYPE_CELESTIAL:
+            # Each validator fetches the archive itself. A DeepSight-hosted
+            # snapshot cannot establish that the measured period/depth agree
+            # with an independent scientific source.
+            archive_result = _verify_archive_measurements(json.loads(published))
+            if archive_result == "matched" and rationale == "Independent archive comparison required for measured period and depth.":
+                result = RESULT_SUFFICIENT
+                rationale = "Period and transit depth agree with a live NASA Exoplanet Archive row for this TIC. This is not a scientific confirmation."
+            elif archive_result != "matched":
+                rationale = _join([rationale, archive_result])
         claim.evidence_summary_hash = digest
         claim.protocol_result = result
         claim.rationale = rationale
@@ -400,12 +411,77 @@ def _evaluate(summary: str, claim_type: str, policy_version: str, target_id: str
 
     if blocking:
         return RESULT_INSUFFICIENT, _join(blocking + reasons)
+    if claim_type == TYPE_SIGNAL:
+        reasons.append("Radio measurements and RFI controls have no independent archive comparison.")
+    else:
+        reasons.append("Independent archive comparison required for measured period and depth.")
     if reasons:
         return RESULT_REVIEW, _join(reasons)
     return (
         RESULT_SUFFICIENT,
         "Required artifacts, provenance, and methodology fields are present. This is not a scientific confirmation.",
     )
+
+
+def _metric_value(document: dict, name: str, unit: str):
+    metrics = document.get("metrics")
+    if not isinstance(metrics, list):
+        return None
+    for metric in metrics:
+        if isinstance(metric, dict) and metric.get("name") == name and metric.get("unit") == unit:
+            pair = _ratio(metric.get("value"))
+            if pair and pair[1] > 0:
+                return pair[0] / pair[1]
+    return None
+
+
+def _verify_archive_measurements(document: dict) -> str:
+    """Compare two measured quantities to live, independently served TAP rows.
+
+    This only applies to exact TIC identifiers and known objects. Novel
+    candidates remain in human review; agreement with a known planet is not
+    evidence that this run independently detected it.
+    """
+    if document.get("scientific_status") != "known_object":
+        return "Unpublished candidate measurements require independent human review."
+    target = document.get("target", {})
+    archive = document.get("archive", {})
+    tic = str(target.get("id", ""))[4:] if isinstance(target, dict) else ""
+    if not tic.isdigit() or len(tic) > 12 or archive.get("name") != "MAST":
+        return "Only MAST observations with an exact TIC identifier can be compared."
+    period = _metric_value(document, "period", "d")
+    depth = _metric_value(document, "depth", "relative_flux")
+    if period is None or depth is None:
+        return "Period and relative-flux depth are both required for archive comparison."
+    query = ("SELECT TOP 30 tic_id,pl_orbper,pl_trandep FROM pscomppars "
+             "WHERE tic_id = 'TIC " + tic + "'")
+    url = "https://exoplanetarchive.ipac.caltech.edu/TAP/sync?query=" + quote(query, safe="") + "&format=json"
+    try:
+        def fetch():
+            payload = json.loads(gl.nondet.web.get(url).body.decode("utf-8"))
+            if not isinstance(payload, list):
+                return []
+            # Sort stable numeric fields so TAP row order cannot split consensus.
+            # GenLayer calldata cannot encode Python floats returned by TAP.
+            # Normalize nondeterministic data before strict_eq crosses that boundary.
+            return sorted([(str(row.get("tic_id", "")), str(row.get("pl_orbper", "")), str(row.get("pl_trandep", "")))
+                           for row in payload[:30] if isinstance(row, dict)], key=str)
+        rows = gl.eq_principle.strict_eq(fetch)
+    except Exception:
+        return "NASA archive comparison was unavailable; measurements remain under review."
+    for identifier, archive_period, archive_depth_percent in rows:
+        if identifier != "TIC " + tic:
+            continue
+        try:
+            reference_period = float(archive_period)
+            reference_depth = float(archive_depth_percent) / 100.0
+        except (TypeError, ValueError):
+            continue
+        if reference_period <= 0 or reference_depth <= 0:
+            continue
+        if abs(period - reference_period) <= max(0.02, reference_period * 0.005) and abs(depth - reference_depth) <= max(0.0002, reference_depth * 0.15):
+            return "matched"
+    return "Period or transit depth does not match a published row for this TIC."
 
 
 def _review_celestial(document: dict, blocking: list[str], reasons: list[str]) -> None:

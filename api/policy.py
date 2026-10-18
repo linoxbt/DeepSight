@@ -13,8 +13,8 @@ RESULT_SUFFICIENT = "EVIDENCE_SUFFICIENT"
 RESULT_INSUFFICIENT = "EVIDENCE_INSUFFICIENT"
 RESULT_REVIEW = "NEEDS_HUMAN_REVIEW"
 
-POLICY_CELESTIAL = "celestial-v1"
-POLICY_SIGNAL = "signal-v1"
+POLICY_CELESTIAL = "celestial-v3"
+POLICY_SIGNAL = "signal-v3"
 TYPE_CELESTIAL = "celestial_object_evidence"
 TYPE_SIGNAL = "radio_signal_integrity"
 
@@ -76,6 +76,10 @@ def evaluate(summary: str, claim_type: str, policy_version: str, target_id: str 
 
     if blocking:
         return RESULT_INSUFFICIENT, _join(blocking + reasons)
+    if claim_type == TYPE_SIGNAL:
+        reasons.append("Radio measurements and RFI controls have no independent archive comparison.")
+    else:
+        reasons.append("Independent archive comparison required for measured period and depth.")
     if reasons:
         return RESULT_REVIEW, _join(reasons)
     return (

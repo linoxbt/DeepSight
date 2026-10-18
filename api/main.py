@@ -52,7 +52,7 @@ app.add_middleware(
 )
 
 
-from api.chain_ops import router as chain_router, idle as require_chain_idle
+from api.chain_ops import router as chain_router, idle as require_chain_idle, config_for_claim
 app.include_router(chain_router)
 from api.jobs import router as jobs_router
 app.include_router(jobs_router)
@@ -228,6 +228,7 @@ def _claim_out(row: ClaimRow) -> dict[str, Any]:
         "superseded_by": row.superseded_by,
         "challenge_reason_hash": row.challenge_reason_hash or "",
         "chain_claim_id": row.chain_claim_id or "",
+        "chain_contract_address": (config_for_claim(row) or {}).get("address", ""),
         "chain_status": row.chain_status or "not_submitted",
         "chain_tx": row.chain_tx or "",
         "chain_note": row.chain_note or _chain_note_default(),
@@ -972,7 +973,7 @@ def appeal_claim(claim_id: str, body: AppealIn, user: str = Depends(current_user
     with SessionLocal() as session:
         claim = _claim_or_404(session, claim_id)
         require_owner(claim, user)
-    raise HTTPException(428, "Appeals require a signed claim-specific intent")
+    raise HTTPException(409, "A finalized transaction cannot be appealed. Pre-finality appeals are not supported by this app yet.")
 
 
 def _radio_cache():

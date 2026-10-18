@@ -62,7 +62,21 @@ def test_studionet_deployment_is_discoverable_without_local_chain_file(monkeypat
     monkeypatch.delenv("DEEPSIGHT_CONTRACT_ADDRESS", raising=False)
     config = load_config()
     assert config is not None
-    assert config["address"] == "0x6B6dC06981Aa6903434dBab601D8b61c5fD57ff8"
+    assert config["address"] == "0xadE6737f44b65b3Faeb7C0aCedd3b0fD23844a0a"
+
+
+def test_finalized_claim_does_not_offer_invalid_appeal(monkeypatch):
+    monkeypatch.setenv("DEEPSIGHT_RELAY_ENABLED", "1")
+    monkeypatch.setattr("api.chain.load_config", lambda: {"address": "0x" + "3" * 40})
+    insert_claim(status="FINALIZED")
+    with SessionLocal() as db:
+        db.get(ClaimRow, "clm_test").chain_claim_id = "pod-1"
+        db.commit()
+    with TestClient(app) as client:
+        rejected = client.post("/v1/claims/clm_test/intent", json={"action": "appeal", "tx_hash": "0x" + "a" * 64})
+        assert rejected.status_code == 422
+        legacy = client.post("/v1/claims/clm_test/appeal", json={"tx_hash": "0x" + "a" * 64})
+        assert legacy.status_code == 409
 
 
 def test_wrong_wallet_cannot_use_challenge():

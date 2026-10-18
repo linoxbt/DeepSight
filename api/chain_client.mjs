@@ -7,7 +7,7 @@ import { executionStatus } from "./chain_execution.mjs";
 const input = JSON.parse(readFileSync(0, "utf8"));
 const emit = (payload) => process.stdout.write(`${JSON.stringify(payload, (_, v) => typeof v === "bigint" ? v.toString() : v)}\n`);
 try {
-  const needsSigner = ["broadcast", "appeal"].includes(input.action);
+  const needsSigner = input.action === "broadcast";
   let account;
   if (needsSigner) {
     const wallet = await Wallet.fromEncryptedJson(readFileSync(input.keystore, "utf8"), input.password);
@@ -25,8 +25,6 @@ try {
     const execution = executionStatus(receipt);
     emit({ ok: true, status: receipt?.statusName || receipt?.status_name || String(receipt?.status || ""),
       execution, rounds: Number(receipt?.numOfRounds ?? 0), result: receipt?.resultName ?? receipt?.result ?? null });
-  } else if (input.action === "appeal") {
-    emit({ ok: true, hash: await client.appealTransaction({ txId: input.tx_hash }), status: "SUBMITTED" });
   } else {
     throw new Error("Unsupported chain action");
   }

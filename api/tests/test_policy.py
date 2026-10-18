@@ -10,7 +10,7 @@ def _base() -> dict:
         "claimant_address": "0x" + "1" * 40,
         "researcher_address": "0x" + "2" * 40,
         "claim_type": "celestial_object_evidence",
-        "policy_version": "celestial-v1",
+        "policy_version": "celestial-v3",
         "target": {"id": "TIC-1", "ra_deg": 10.0, "dec_deg": -20.0},
         "archive": {"name": "MAST", "observation_ids": ["obs-1"]},
         "analysis": {"git_commit": "abc", "container_digest": "sha256:" + "d" * 64},
@@ -32,16 +32,16 @@ def _base() -> dict:
     }
 
 
-def test_complete_mast_manifest_is_sufficient_but_not_a_discovery():
-    result, rationale = evaluate(json.dumps(_base()), "celestial_object_evidence", "celestial-v1")
-    assert result == RESULT_SUFFICIENT
-    assert "not a scientific confirmation" in rationale
+def test_complete_mast_manifest_stays_in_review_without_independent_measurement_check():
+    result, rationale = evaluate(json.dumps(_base()), "celestial_object_evidence", "celestial-v3")
+    assert result == RESULT_REVIEW
+    assert "Independent archive comparison" in rationale
 
 
 def test_confirmation_language_is_rejected():
     document = _base()
     document["scientific_status"] = "planet_confirmed"
-    result, rationale = evaluate(json.dumps(document), "celestial_object_evidence", "celestial-v1")
+    result, rationale = evaluate(json.dumps(document), "celestial_object_evidence", "celestial-v3")
     assert result == RESULT_INSUFFICIENT
     assert "cannot certify" in rationale
 
@@ -49,7 +49,7 @@ def test_confirmation_language_is_rejected():
 def test_synthetic_archive_needs_a_person():
     document = _base()
     document["archive"]["name"] = "DeepSight synthetic calibration"
-    result, rationale = evaluate(json.dumps(document), "celestial_object_evidence", "celestial-v1")
+    result, rationale = evaluate(json.dumps(document), "celestial_object_evidence", "celestial-v3")
     assert result == RESULT_REVIEW
     assert "allowlist" in rationale
 
@@ -57,7 +57,7 @@ def test_synthetic_archive_needs_a_person():
 def test_missing_artifact_is_insufficient():
     document = _base()
     document["artifacts"] = []
-    result, _rationale = evaluate(json.dumps(document), "celestial_object_evidence", "celestial-v1")
+    result, _rationale = evaluate(json.dumps(document), "celestial_object_evidence", "celestial-v3")
     assert result == RESULT_INSUFFICIENT
 
 

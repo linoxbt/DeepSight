@@ -5,14 +5,13 @@ import secrets
 import time
 from urllib.parse import urlparse
 
-from eth_account import Account
-from eth_account.messages import encode_defunct
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, select, func
 
 from api.db import AuthChallenge, AuthSession, SessionLocal
 from api.limits import rate_limit
+from api.signatures import valid_message_signature
 
 router = APIRouter(prefix="/v1/auth", tags=["identity"])
 COOKIE = "deepsight_session"
@@ -58,7 +57,7 @@ class ChallengeIn(BaseModel):
 
 class VerifyIn(BaseModel):
     challenge_id: str = Field(min_length=32, max_length=64)
-    signature: str = Field(pattern=r"^(0x)?[0-9a-fA-F]{130}$")
+    signature: str = Field(pattern=r"^(?:0x)?(?:[0-9a-fA-F]{2}){1,2048}$")
 
 
 @router.post("/challenge")
@@ -91,12 +90,9 @@ def verify(body: VerifyIn, request: Request, response: Response):
         row = db.get(AuthChallenge, body.challenge_id)
         if row is None or row.expires <= now:
             raise HTTPException(401, "Sign-in challenge expired or already used")
-        try:
-            address = Account.recover_message(encode_defunct(text=row.message), signature=body.signature).lower()
-        except Exception as exc:
-            raise HTTPException(401, "Invalid signature") from exc
-        if address != row.address:
+        if not valid_message_signature(row.address, row.message, body.signature):
             raise HTTPException(401, "Signature does not match this wallet")
+        address = row.address
         consumed = db.execute(delete(AuthChallenge).where(AuthChallenge.id == row.id, AuthChallenge.expires > now))
         if consumed.rowcount != 1:
             raise HTTPException(401, "Challenge already used")

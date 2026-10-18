@@ -39,16 +39,20 @@ def load_config() -> dict[str, str] | None:
     keystore = os.environ.get("DEEPSIGHT_KEYSTORE", "").strip()
     ignore_file = os.environ.get("DEEPSIGHT_IGNORE_CHAIN_FILE") == "1"
     path = DATA_DIR / "chain.json"
+    stored_address = ""
     if path.exists() and not ignore_file:
         stored = json.loads(path.read_text())
-        address = address or str(stored.get("address", "")).strip()
+        stored_address = str(stored.get("address", "")).strip()
         account = str(stored.get("account", account))
         keystore = keystore or str(stored.get("keystore", "")).strip()
-    deployment = Path(__file__).resolve().parent.parent / "deployments" / "studionet.json"
+    deployment = Path(__file__).resolve().parent.parent / "deployments" / "studionet-v3.json"
+    if not deployment.exists():
+        deployment = deployment.with_name("studionet-v2.json")
     if not address and deployment.exists() and not ignore_file:
         recorded = json.loads(deployment.read_text())
         if recorded.get("network") == "studionet" and recorded.get("finalized_execution") == "SUCCESS":
             address = str(recorded.get("contract_address", "")).strip()
+    address = address or stored_address
     password_path = DATA_DIR / "genlayer.password"
     if not password and password_path.exists() and not ignore_file:
         password = password_path.read_text().strip()
@@ -61,7 +65,7 @@ def load_config() -> dict[str, str] | None:
 
 def invoke(payload: dict[str, Any], config: dict[str, str] | None = None) -> dict[str, Any]:
     config = config or _require()
-    if payload.get("action") in ("broadcast", "appeal") and not config.get("password"):
+    if payload.get("action") == "broadcast" and not config.get("password"):
         raise ChainError("The StudioNet account password is not available to this process.", 503)
     body = {
         **payload,

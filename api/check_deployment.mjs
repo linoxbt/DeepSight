@@ -5,7 +5,7 @@ import { createClient } from "genlayer-js";
 import { studionet } from "genlayer-js/chains";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
-const recordPath = resolve(root, "deployments/studionet.json");
+const recordPath = resolve(root, process.env.DEEPSIGHT_DEPLOYMENT_RECORD || "deployments/studionet-v3.json");
 const record = JSON.parse(readFileSync(recordPath, "utf8"));
 const client = createClient({ chain: studionet });
 const tx = await client.getTransaction({ hash: record.tx_hash });

@@ -115,10 +115,21 @@ and the [registration](https://explorer-studio.genlayer.com/tx/0xee82531b43197ce
 and [challenge](https://explorer-studio.genlayer.com/tx/0x62fa28e1af641ce11bcfc0f4c52cbd99a70d30d4593e6c50784e4bd0d8c89973)
 transactions are publicly inspectable. This is a development-network deployment;
 it verifies protocol execution, not the scientific measurements in a manifest.
+The current [`celestial-v3` contract](deployments/studionet-v3.json) is deployed
+at [0xadE6737f44b65b3Faeb7C0aCedd3b0fD23844a0a](https://explorer-studio.genlayer.com/address/0xadE6737f44b65b3Faeb7C0aCedd3b0fD23844a0a).
+Its deployment finalized with successful execution and its code matched this
+repository. The previous v2 deployment remains available for its existing
+claims; a live known-object review exposed a GenLayer calldata error when its
+NASA TAP result contained floats. V3 converts TAP values to strings before
+validator agreement. StudioNet's daily read-call limit prevented a v3 read
+method check from this environment immediately after deployment.
+Validators query NASA TAP for an exact TIC and compare period and transit depth.
+Unpublished candidates, archive mismatches, and radio observations remain in
+human review. This does not reprocess source pixels or confirm a planet.
 Deploy `ProofOfDiscovery` with the public HTTPS web origin as its constructor
 argument. Validators fetch each published manifest from that fixed origin and
-check its hash, target, and relay claimant before registration. This verifies
-the published record, not the scientific measurements or the external archives.
+check its hash, target, and relay claimant before registration. The v3 review
+adds a live NASA period-and-depth comparison for known TIC objects.
 
 ## Deployment
 
@@ -140,6 +151,15 @@ objects. `DEEPSIGHT_S3_ENDPOINT` selects an S3-compatible service. Set
 `DEEPSIGHT_REQUIRE_OBJECT_STORE=1` in production so new evidence cannot fall
 back to database text when the bucket is missing. Keep independent, tested
 backups of PostgreSQL and the bucket; object checksums are verified on read.
+In production, Railway PITR is enabled for Postgres. The worker copies evidence
+objects daily to a separate recovery bucket and verifies each copy before
+writing the dated completion manifest. Set `DEEPSIGHT_BACKUP_ENDPOINT`,
+`DEEPSIGHT_BACKUP_BUCKET`, `DEEPSIGHT_BACKUP_ACCESS_KEY_ID`, and
+`DEEPSIGHT_BACKUP_SECRET_ACCESS_KEY` on the worker. A portable SQL dump and
+evidence ZIP were restored and checked on 2026-10-18. Railway's separate PITR
+restore failed on its default 500 MB volume; increase restore volume capacity
+before relying on that path. The current workspace plan does not allow Railway
+scheduled database backups, so keep PITR and the portable dump procedure.
 If the API is behind a reverse proxy, set `DEEPSIGHT_TRUSTED_PROXY_CIDRS` to
 the proxy's exact source network before using `X-Forwarded-For` for rate limits.
 
