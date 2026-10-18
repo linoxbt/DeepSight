@@ -11,7 +11,7 @@ export default function MethodologyPage() {
       </header>
       <div className="stack">
         <section className="panel">
-          <h2>Celestial evidence, version celestial-v3</h2>
+          <h2>Celestial evidence, version celestial-v4</h2>
           <p>
             The policy looks for a target, coordinates, an observation id, a period, a depth or signal-to-noise metric,
             an artifact checksum, a catalogue snapshot, odd-even and secondary-eclipse notes, limitations, and a
@@ -47,7 +47,7 @@ export default function MethodologyPage() {
             on the claim.
           </p>
           <p>
-            Signal integrity, version signal-v3, requires an observation, a frequency and time range, a noise method,
+            Signal integrity, version signal-v4, requires an observation, a frequency and time range, a noise method,
             calibration, an artifact hash, and at least one RFI test. Missing an off-target comparison stays in human
             review. The outcome is still not a technosignature.
           </p>

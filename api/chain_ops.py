@@ -24,6 +24,7 @@ router = APIRouter(prefix="/v1", tags=["chain"])
 ACTIVE = ("queued", "broadcasting", "submitted", "reconciling", "unknown")
 LEGACY_CONTRACT = "0x6B6dC06981Aa6903434dBab601D8b61c5fD57ff8"
 V2_CONTRACT = "0x0E564b1d1767863FA3B73c6d07e3af73508CbB92"
+V3_CONTRACT = "0xadE6737f44b65b3Faeb7C0aCedd3b0fD23844a0a"
 
 
 def config_for_claim(claim):
@@ -35,6 +36,8 @@ def config_for_claim(claim):
         return {**cfg, "address": os.environ.get("DEEPSIGHT_LEGACY_CONTRACT_ADDRESS", LEGACY_CONTRACT)}
     if policy in ("celestial-v2", "signal-v2"):
         return {**cfg, "address": os.environ.get("DEEPSIGHT_V2_CONTRACT_ADDRESS", V2_CONTRACT)}
+    if policy in ("celestial-v3", "signal-v3"):
+        return {**cfg, "address": os.environ.get("DEEPSIGHT_V3_CONTRACT_ADDRESS", V3_CONTRACT)}
     return cfg
 
 

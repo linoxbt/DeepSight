@@ -9,11 +9,15 @@ from urllib.parse import quote
 from api.tests.test_policy import _base
 
 
-def verifier(payload):
+def verifier(payload, *, raw_body=None, fetch_error=False):
     tree = ast.parse(Path("contracts/proof_of_discovery.py").read_text())
     selected = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in
                 {"_verify_archive_measurements", "_metric_value", "_ratio"}]
-    web = SimpleNamespace(get=lambda _url: SimpleNamespace(body=json.dumps(payload).encode()))
+    def get(_url):
+        if fetch_error:
+            raise RuntimeError("archive unavailable")
+        return SimpleNamespace(body=raw_body if raw_body is not None else json.dumps(payload).encode())
+    web = SimpleNamespace(get=get)
     def strict_eq(work):
         rows = work()
         assert all(isinstance(value, str) for row in rows for value in row)
@@ -41,3 +45,12 @@ def test_unpublished_candidate_never_passes_external_comparison():
     document = _base()
     document["target"]["id"] = "TIC-259377017"
     assert "human review" in verifier([])(document)
+
+
+def test_archive_html_or_network_error_requires_review_instead_of_failing_consensus():
+    document = _base()
+    document["target"]["id"] = "TIC-259377017"
+    document["scientific_status"] = "known_object"
+    for check in (verifier([], raw_body=b"<html>temporarily unavailable</html>"),
+                  verifier([], fetch_error=True), verifier([])):
+        assert "archive comparison was unavailable" in check(document)

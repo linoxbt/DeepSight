@@ -26,8 +26,8 @@ STATUS_CHALLENGED = "CHALLENGED"
 STATUS_SUPERSEDED = "SUPERSEDED"
 STATUS_RETRACTED = "RETRACTED"
 
-POLICY_CELESTIAL = "celestial-v3"
-POLICY_SIGNAL = "signal-v3"
+POLICY_CELESTIAL = "celestial-v4"
+POLICY_SIGNAL = "signal-v4"
 TYPE_CELESTIAL = "celestial_object_evidence"
 TYPE_SIGNAL = "radio_signal_integrity"
 
@@ -458,7 +458,12 @@ def _verify_archive_measurements(document: dict) -> str:
     url = "https://exoplanetarchive.ipac.caltech.edu/TAP/sync?query=" + quote(query, safe="") + "&format=json"
     try:
         def fetch():
-            payload = json.loads(gl.nondet.web.get(url).body.decode("utf-8"))
+            # Network failures happen inside each validator. Catch them here;
+            # an outer try cannot recover an exception in nondeterministic work.
+            try:
+                payload = json.loads(gl.nondet.web.get(url).body.decode("utf-8"))
+            except Exception:
+                return []
             if not isinstance(payload, list):
                 return []
             # Sort stable numeric fields so TAP row order cannot split consensus.
@@ -468,6 +473,8 @@ def _verify_archive_measurements(document: dict) -> str:
                            for row in payload[:30] if isinstance(row, dict)], key=str)
         rows = gl.eq_principle.strict_eq(fetch)
     except Exception:
+        return "NASA archive comparison was unavailable; measurements remain under review."
+    if not rows:
         return "NASA archive comparison was unavailable; measurements remain under review."
     for identifier, archive_period, archive_depth_percent in rows:
         if identifier != "TIC " + tic:

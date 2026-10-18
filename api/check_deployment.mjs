@@ -5,7 +5,7 @@ import { createClient } from "genlayer-js";
 import { studionet } from "genlayer-js/chains";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
-const recordPath = resolve(root, process.env.DEEPSIGHT_DEPLOYMENT_RECORD || "deployments/studionet-v3.json");
+const recordPath = resolve(root, process.env.DEEPSIGHT_DEPLOYMENT_RECORD || "deployments/studionet-v4.json");
 const record = JSON.parse(readFileSync(recordPath, "utf8"));
 const client = createClient({ chain: studionet });
 const tx = await client.getTransaction({ hash: record.tx_hash });
@@ -35,6 +35,8 @@ if (result.status === "FINALIZED" && result.contract_address) {
     if (result.code_matches_source && result.readable) {
       record.contract_address = result.contract_address;
       record.finalized_at = new Date().toISOString();
+      record.finalized_execution = "SUCCESS";
+      record.code_matches_source = true;
       record.read_method_check = "passed";
       writeFileSync(recordPath, JSON.stringify(record, null, 2) + "\n", { mode: 0o600 });
     }

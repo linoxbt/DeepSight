@@ -45,9 +45,9 @@ def load_config() -> dict[str, str] | None:
         stored_address = str(stored.get("address", "")).strip()
         account = str(stored.get("account", account))
         keystore = keystore or str(stored.get("keystore", "")).strip()
-    deployment = Path(__file__).resolve().parent.parent / "deployments" / "studionet-v3.json"
+    deployment = Path(__file__).resolve().parent.parent / "deployments" / "studionet-v4.json"
     if not deployment.exists():
-        deployment = deployment.with_name("studionet-v2.json")
+        deployment = deployment.with_name("studionet-v3.json")
     if not address and deployment.exists() and not ignore_file:
         recorded = json.loads(deployment.read_text())
         if recorded.get("network") == "studionet" and recorded.get("finalized_execution") == "SUCCESS":

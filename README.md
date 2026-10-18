@@ -133,20 +133,20 @@ and the [registration](https://explorer-studio.genlayer.com/tx/0xee82531b43197ce
 and [challenge](https://explorer-studio.genlayer.com/tx/0x62fa28e1af641ce11bcfc0f4c52cbd99a70d30d4593e6c50784e4bd0d8c89973)
 transactions are publicly inspectable. This is a development-network deployment;
 it verifies protocol execution, not the scientific measurements in a manifest.
-The current [`celestial-v3` contract](deployments/studionet-v3.json) is deployed
-at [0xadE6737f44b65b3Faeb7C0aCedd3b0fD23844a0a](https://explorer-studio.genlayer.com/address/0xadE6737f44b65b3Faeb7C0aCedd3b0fD23844a0a).
-Its deployment finalized with successful execution and its code matched this
-repository. The previous v2 deployment remains available for its existing
-claims; a live known-object review exposed a GenLayer calldata error when its
-NASA TAP result contained floats. V3 converts TAP values to strings before
-validator agreement. StudioNet's daily read-call limit prevented a v3 read
-method check from this environment immediately after deployment.
+The current [`celestial-v4` contract](deployments/studionet-v4.json) is deployed
+at [0x5cfaE959BbFF6Be9e4A1F477abDCc61fAfD5eeb1](https://explorer-studio.genlayer.com/address/0x5cfaE959BbFF6Be9e4A1F477abDCc61fAfD5eeb1).
+Its deployment finalized, deployed code matched this repository, and its read
+method succeeded. Earlier contracts remain available for existing claims. V4
+normalizes TAP numeric values and handles malformed or unavailable archive
+responses within each validator. A live signed TESS registration and review
+finalized on v4; the archive was unavailable to validators, so the on-chain
+result was `NEEDS_HUMAN_REVIEW` with an explicit reason.
 Validators query NASA TAP for an exact TIC and compare period and transit depth.
 Unpublished candidates, archive mismatches, and radio observations remain in
 human review. This does not reprocess source pixels or confirm a planet.
 Deploy `ProofOfDiscovery` with the public HTTPS web origin as its constructor
 argument. Validators fetch each published manifest from that fixed origin and
-check its hash, target, and relay claimant before registration. The v3 review
+check its hash, target, and relay claimant before registration. The v4 review
 adds a live NASA period-and-depth comparison for known TIC objects.
 
 ## Deployment

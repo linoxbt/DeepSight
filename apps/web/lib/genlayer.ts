@@ -1,4 +1,4 @@
-import deployment from "../../../deployments/studionet-v3.json";
+import deployment from "../../../deployments/studionet-v4.json";
 
 export const GENLAYER_STUDIO_EXPLORER = "https://explorer-studio.genlayer.com";
 export const PROOF_OF_DISCOVERY_ADDRESS = deployment.contract_address;

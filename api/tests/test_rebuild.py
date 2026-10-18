@@ -68,7 +68,7 @@ def test_studionet_deployment_is_discoverable_without_local_chain_file(monkeypat
     monkeypatch.delenv("DEEPSIGHT_CONTRACT_ADDRESS", raising=False)
     config = load_config()
     assert config is not None
-    assert config["address"] == "0xadE6737f44b65b3Faeb7C0aCedd3b0fD23844a0a"
+    assert config["address"] == "0x5cfaE959BbFF6Be9e4A1F477abDCc61fAfD5eeb1"
 
 
 def test_packaged_source_revision_is_verifiable_without_git(monkeypatch):
