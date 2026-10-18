@@ -106,8 +106,15 @@ Local lint and mock-based integration tests are not proof of live network behavi
 The contract in [`deployments/studionet.json`](deployments/studionet.json) was
 deployed to StudioNet on 2026-10-16. Its deployment transaction finalized with
 successful execution and the code at that address matched this repository.
-This is a development-network deployment; claim lifecycle writes still need
-live end-to-end verification.
+On 2026-10-18, a disposable wallet signed a hosted claim intent; the Railway
+worker registered `pod-1`, finalized its evidence review with
+`EVIDENCE_SUFFICIENT`, and finalized a challenge signed by a second wallet.
+The [contract](https://explorer-studio.genlayer.com/address/0x6B6dC06981Aa6903434dBab601D8b61c5fD57ff8)
+and the [registration](https://explorer-studio.genlayer.com/tx/0xee82531b43197cec5a5c75ccd20d7d4a45cc311642014bcd7e9b0a1ee4ea4681),
+[review](https://explorer-studio.genlayer.com/tx/0x1ea1cb6760137502d94975143332c5a60985c3f8eee885f5e9c04c8ea9955968),
+and [challenge](https://explorer-studio.genlayer.com/tx/0x62fa28e1af641ce11bcfc0f4c52cbd99a70d30d4593e6c50784e4bd0d8c89973)
+transactions are publicly inspectable. This is a development-network deployment;
+it verifies protocol execution, not the scientific measurements in a manifest.
 Deploy `ProofOfDiscovery` with the public HTTPS web origin as its constructor
 argument. Validators fetch each published manifest from that fixed origin and
 check its hash, target, and relay claimant before registration. This verifies

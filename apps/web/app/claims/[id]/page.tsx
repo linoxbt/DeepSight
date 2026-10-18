@@ -4,6 +4,7 @@ import { useParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { ChainAction } from "@/components/ChainAction";
 import { api } from "@/lib/api";
+import { studioContractUrl, studioTransactionUrl } from "@/lib/genlayer";
 import { Shell } from "@/components/Shell";
 
 type Claim = {
@@ -34,6 +35,7 @@ type Claim = {
 
 type Event = { status: string; note: string; observed_at: string };
 type Attestation = { id: string; reviewer: string; decision: string; note: string; conflict_disclosure: string; manifest_hash: string; created_at: string };
+type ChainConfig = { configured: boolean; contract_address: string | null; relay_enabled: boolean };
 
 export default function ClaimDetailPage() {
   const params = useParams<{ id: string }>();
@@ -46,6 +48,7 @@ export default function ClaimDetailPage() {
   const [viewer, setViewer] = useState("");
   const [operations, setOperations] = useState<{ id: string; action: string; stage: string; status: string; error: string; tx_hash: string }[]>([]);
   const [attestations, setAttestations] = useState<Attestation[]>([]);
+  const [chainConfig, setChainConfig] = useState<ChainConfig | null>(null);
   const refreshSeq = useRef(0);
   const owns = !!viewer && viewer === claim?.owner;
 
@@ -55,12 +58,13 @@ export default function ClaimDetailPage() {
     if (sequence !== refreshSeq.current) return;
     setClaim(record);
     setError("");
-    const [ops, viewerSession, timeline, finalityResult, reviews] = await Promise.allSettled([
+    const [ops, viewerSession, timeline, finalityResult, reviews, network] = await Promise.allSettled([
       api<{ operations: typeof operations }>(`/v1/claims/${params.id}/operations`),
       api<{ address: string }>("/v1/auth/session"),
       api<{ events: Event[] }>(`/v1/claims/${params.id}/timeline`),
       api<{ reason: string }>(`/v1/claims/${params.id}/finality`),
       api<{ attestations: Attestation[] }>(`/v1/research/attestations?claim_id=${encodeURIComponent(params.id)}`),
+      api<ChainConfig>("/v1/chain/config"),
     ]);
     if (sequence !== refreshSeq.current) return;
     if (ops.status === "fulfilled") setOperations(ops.value.operations);
@@ -68,7 +72,8 @@ export default function ClaimDetailPage() {
     if (timeline.status === "fulfilled") setEvents(timeline.value.events);
     if (finalityResult.status === "fulfilled") setFinality(finalityResult.value.reason);
     if (reviews.status === "fulfilled") setAttestations(reviews.value.attestations);
-    if ([ops, timeline, finalityResult, reviews].some(result => result.status === "rejected")) setError("Some claim details could not be loaded. Refresh to retry.");
+    setChainConfig(network.status === "fulfilled" ? network.value : null);
+    if ([ops, timeline, finalityResult, reviews, network].some(result => result.status === "rejected")) setError("Some claim details could not be loaded. Refresh to retry.");
   }
 
   useEffect(() => {
@@ -102,7 +107,7 @@ export default function ClaimDetailPage() {
               {busy.endsWith("review-request") ? "Reviewing…" : "Run policy review"}
             </button>
           ) : null}
-          {owns && claim && !claim.chain_claim_id && ["EVIDENCE_READY", "FINALIZED", "NEEDS_REVIEW"].includes(claim.status) ? (
+          {owns && claim && chainConfig?.relay_enabled && !claim.chain_claim_id && ["EVIDENCE_READY", "FINALIZED", "NEEDS_REVIEW"].includes(claim.status) ? (
             <ChainAction claimId={claim.id} action="submit" label="Sign and submit to StudioNet" onQueued={load} />
           ) : null}
         </div>
@@ -128,7 +133,9 @@ export default function ClaimDetailPage() {
             <p>{claim.chain_rationale}</p>
             <p>Consensus: {claim.chain_status} · Execution: {claim.chain_execution || "Not submitted"}</p>
             <p className="fine muted">Chain actions require your signature. The DeepSight relay pays fees and is the on-chain claimant.</p>
-            {operations.map(op => <div key={op.id} className="event"><strong>{op.action} · {op.stage} · {op.status}</strong><p className="hash mono">{op.tx_hash}</p>{op.error && <p role="alert">{op.error}</p>}</div>)}
+            {chainConfig?.contract_address ? <p className="fine"><a href={studioContractUrl(chainConfig.contract_address)} target="_blank" rel="noopener noreferrer">View Proof of Discovery on GenLayer StudioNet ↗</a></p> : null}
+            {chainConfig && !chainConfig.relay_enabled ? <p className="callout">StudioNet submissions are temporarily unavailable. Existing chain records remain visible.</p> : null}
+            {operations.map(op => <div key={op.id} className="event"><strong>{op.action} · {op.stage} · {op.status}</strong><p className="hash mono">{op.tx_hash ? <a href={studioTransactionUrl(op.tx_hash)} target="_blank" rel="noopener noreferrer">{op.tx_hash} ↗</a> : "Awaiting transaction"}</p>{op.error && <p role="alert">{op.error}</p>}</div>)}
           </section>
           <section className="panel">
             <h2>Why</h2>
@@ -155,10 +162,10 @@ export default function ClaimDetailPage() {
                 <input aria-label="Challenge reason" value={reason} onChange={(event) => setReason(event.target.value)} style={{ background: "transparent", border: "1px solid var(--line)", padding: "8px 10px", minWidth: 280 }} />
                 {!claim.chain_claim_id && <button className="primary" type="submit" disabled={reason.trim().length < 20 || busy !== ""}>Record challenge</button>}
               </form>
-              {claim.chain_claim_id && <ChainAction claimId={claim.id} action="challenge" reason={reason} label="Sign challenge" onQueued={load} />}
+              {claim.chain_claim_id && chainConfig?.relay_enabled && <ChainAction claimId={claim.id} action="challenge" reason={reason} label="Sign challenge" onQueued={load} />}
             </section>
           ) : null}
-          {owns && claim.chain_claim_id && claim.chain_tx.includes("0x") && (
+          {owns && chainConfig?.relay_enabled && claim.chain_claim_id && claim.chain_tx.includes("0x") && (
             <section className="panel"><h2>Appeal</h2>
               <p className="fine muted">Choose the transaction to appeal. Availability and fees depend on the network.</p>
               {Object.entries(JSON.parse(claim.chain_tx || "{}") as Record<string, string>).map(([kind, hash]) => <ChainAction key={kind} claimId={claim.id} action="appeal" txHash={hash} label={`Sign appeal: ${kind}`} onQueued={load} />)}
@@ -166,8 +173,8 @@ export default function ClaimDetailPage() {
           )}
           {owns && !["RETRACTED", "SUPERSEDED"].includes(claim.status) && (
             <section className="panel actions">
-              {claim.chain_claim_id ? <ChainAction claimId={claim.id} action="retract" label="Sign retraction" onQueued={load} /> : <button className="ghost" disabled={!!busy} onClick={() => act(`/v1/claims/${params.id}/retract`)}>Retract local claim</button>}
-              {["FINALIZED", "NEEDS_REVIEW", "CHALLENGED"].includes(claim.status) && (claim.chain_claim_id ? <ChainAction claimId={claim.id} action="supersede" label="Sign replacement" onQueued={load} /> : <button className="ghost" disabled={!!busy} onClick={() => act(`/v1/claims/${params.id}/supersede`)}>Create replacement</button>)}
+              {claim.chain_claim_id ? (chainConfig?.relay_enabled && <ChainAction claimId={claim.id} action="retract" label="Sign retraction" onQueued={load} />) : <button className="ghost" disabled={!!busy} onClick={() => act(`/v1/claims/${params.id}/retract`)}>Retract local claim</button>}
+              {["FINALIZED", "NEEDS_REVIEW", "CHALLENGED"].includes(claim.status) && (claim.chain_claim_id ? (chainConfig?.relay_enabled && <ChainAction claimId={claim.id} action="supersede" label="Sign replacement" onQueued={load} />) : <button className="ghost" disabled={!!busy} onClick={() => act(`/v1/claims/${params.id}/supersede`)}>Create replacement</button>)}
             </section>
           )}
           {claim.manifest ? (

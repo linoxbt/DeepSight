@@ -1,6 +1,6 @@
 # DeepSight audit remediation status
 
-Updated 2026-10-17. **Deployed, but not production ready.** The public Netlify site uses a dedicated Railway project with a live Python API, worker, PostgreSQL and S3-compatible bucket. `/v1/health` returns HTTP 200. The encrypted StudioNet signer is configured in the worker, but the on-chain relay remains disabled until a finalized lifecycle test can pass; the public StudioNet RPC currently reports its 5,000-request daily limit. Scientific provenance and social-login gaps also remain.
+Updated 2026-10-18. **Deployed, but not production ready.** The public Netlify site uses a dedicated Railway project with a live Python API, worker, PostgreSQL and S3-compatible bucket. `/v1/health` returns HTTP 200. The encrypted StudioNet signer is configured in the worker and the relay is enabled after a live, finalized register/review/challenge lifecycle. Scientific provenance and social-login gaps remain.
 
 ## Verified fixes
 
@@ -20,6 +20,7 @@ Updated 2026-10-17. **Deployed, but not production ready.** The public Netlify s
 | Image notebook was browser-only | Authenticated, owner-scoped JPG/PNG/WebP upload, private file download, saved notes/marks, checksum validation, failed-commit cleanup, browser save/reopen check, and retry feedback. This is a visual notebook, not scientific image analysis. |
 | Database schema and durable evidence storage | Alembic revisions 0001–0003 applied on Railway Postgres; S3-backed private image upload, read and checksum passed through the public site. Backup/restore drill remains open. |
 | GenLayer result parser | Handles `FINISHED_WITH_RETURN` and exposes appeal round data; Node test. |
+| Live GenLayer integration | Disposable EOA signed a hosted intent; worker registered `pod-1` on the deployed contract, finalized evidence review as `EVIDENCE_SUFFICIENT`, and finalized a challenge signed by a second wallet. The API reflected all three transaction outcomes. |
 | Netlify build configuration | `API_PROXY` points to the healthy Railway API; public `/v1/health` returns 200. |
 | Gaia public timeout | The Netlify proxy timed out on a live 36-second Gaia TAP query. The public read-only Gaia form now calls Railway directly; the API CORS preflight permits the Netlify origin. A live Chromium form submission returned one Gaia source. |
 | Public dashboard | The live browser loaded a real TESS claim from the hosted API. The claim projection now maps the manifest's `period` metric to the dashboard's `period_days` field; a regression test covers the mapping. The dashboard labels records as research claims rather than finalized publications. |
@@ -28,13 +29,13 @@ Updated 2026-10-17. **Deployed, but not production ready.** The public Netlify s
 
 | Severity | Finding | Required completion |
 | --- | --- | --- |
-| High | Relay is disabled and StudioNet contract has not completed a live claim/review/challenge/appeal lifecycle. The encrypted signer is deployed, but StudioNet read verification hit its 5,000-request daily RPC limit. | After RPC access is restored, test finalized writes and reads against the deployed contract before enabling the relay. |
 | High | Validators verify manifest bytes and structure, but not independent archive snapshots, measurements or artifact contents. | Add bounded independent verification and redeploy before treating an evidence-sufficient outcome as robust provenance. |
 | High | Hosted Postgres and bucket have no verified backup/restore drill, retention policy or monitoring. | Perform and document restore drill and operational alerts. |
 | High | Reown email/Google and smart-account signatures remain unverified live; backend currently verifies EOA signatures. | Exercise both social paths against hosted API and support the issued account's signature type. |
 | Medium | Image upload is a private visual notebook and does not process FITS data or detect planets. | Define and implement a scientifically valid image workflow only if required by the product. |
 | Medium | MCP, persistent collaborative notebooks and Redis from the broader architecture are absent. | Prioritize after the deployed TESS workflow and evidence chain are reliable. |
 | Medium | No scheduled archive availability or snapshot-comparison monitor. | Add live smoke monitoring and scientific source review. |
+| Medium | Retraction, supersession and appeal have automated coverage but no finalized StudioNet test. | Run signed live lifecycle tests before relying on these less common mutations. |
 
 ## Verification
 
@@ -44,4 +45,5 @@ Updated 2026-10-17. **Deployed, but not production ready.** The public Netlify s
 - PostgreSQL 16: Alembic upgraded through 0003; `DEEPSIGHT_REQUIRE_MIGRATIONS=1` startup check passed. SQLite fresh/upgrade checks passed.
 - `uv pip install -r requirements.lock --dry-run`, `POSTGRES_PASSWORD=dev-only-validation docker compose config --quiet`, and `git diff --check`: passed.
 - Public Netlify-to-Railway live smoke passed: health and registry reads; disposable EOA challenge, signature session and logout; private S3 image upload/read/notes; queued MAST import, BLS analysis, evidence preflight and local claim bundle; radio worker analysis. Test records remain private to their disposable wallets.
-- Public NASA TAP, JPL Horizons, Breakthrough Listen and direct Railway Gaia calls returned live results. The deployed Gaia page returned a live source through Chromium after bypassing the timed-out proxy. GenLayer writes and social sign-in still need independent live verification.
+- Public NASA TAP, JPL Horizons, Breakthrough Listen and direct Railway Gaia calls returned live results. The deployed Gaia page returned a live source through Chromium after bypassing the timed-out proxy.
+- Hosted GenLayer registration `0xee82531b...`, review `0x1ea1cb67...`, and independent challenge `0x62fa28e1...` finalized successfully on StudioNet. Reown social sign-in still needs independent live verification.

@@ -327,6 +327,13 @@ th,td { padding:15px 12px; }
 .lede { font-size:18px; line-height:1.6; }
 .hero-description { color:var(--muted); max-width:43ch; line-height:1.8; }
 .hero-copy .actions { margin:28px 0 25px; gap:24px; }
+.genlayer-badge { display:inline-flex; align-items:center; gap:12px; max-width:100%; margin:0 0 20px; padding:10px 13px; border:1px solid var(--line); color:var(--text); text-decoration:none; transition:border-color .2s ease,background .2s ease; }
+.genlayer-badge:hover,.genlayer-badge:focus-visible { border-color:var(--accent); background:var(--surface); }
+.genlayer-badge-mark { display:grid; place-items:center; width:30px; height:30px; flex:none; border:1px solid var(--accent); color:var(--accent); font:700 18px/1 "Newsreader Variable",Georgia,serif; }
+.genlayer-badge span:nth-child(2) { display:grid; gap:2px; min-width:0; }
+.genlayer-badge strong { font-size:12px; }
+.genlayer-badge small { color:var(--muted); font:9px/1.4 "JetBrains Mono",monospace; letter-spacing:.04em; }
+.genlayer-badge>span:last-child { align-self:flex-start; color:var(--accent); }
 .hero-copy .micro { font-size:8px; }
 .specimen { margin:20px 0 0; padding:24px; border:1px solid var(--line); background:var(--surface); position:relative; box-shadow:7px 7px 0 var(--paper-2); }
 .specimen-meta { display:flex; justify-content:space-between; padding-bottom:15px; border-bottom:1px solid var(--line); font:9px/1.5 "JetBrains Mono",monospace; text-transform:uppercase; letter-spacing:.1em; color:var(--muted); }

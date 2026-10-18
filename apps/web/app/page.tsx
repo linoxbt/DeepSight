@@ -1,5 +1,6 @@
 import { Shell } from "@/components/Shell";
 import { ObservatoryMark } from "@/components/ObservatoryMark";
+import { studioContractUrl } from "@/lib/genlayer";
 import Image from "next/image";
 
 const steps = [
@@ -17,6 +18,11 @@ export default function HomePage() {
         <p className="lede">The universe gives us signals.<br />Make the case for what they mean.</p>
         <p className="hero-description">Explore astronomical archives, investigate transit candidates, and put reproducible evidence on the record.</p>
         <div className="actions"><a className="primary" href="/dashboard">View public dashboard ↗</a><a className="text-link" href="/explore">Enter the workspace →</a></div>
+        <a className="genlayer-badge" href={studioContractUrl()} target="_blank" rel="noopener noreferrer" aria-label="View the DeepSight contract on GenLayer StudioNet">
+          <span className="genlayer-badge-mark" aria-hidden="true">G</span>
+          <span><strong>Built with GenLayer</strong><small>StudioNet · Proof of Discovery contract</small></span>
+          <span aria-hidden="true">↗</span>
+        </a>
         <p className="micro">OPEN ARCHIVES. TRACEABLE ANALYSIS. HUMAN JUDGMENT.</p>
       </div>
       <figure className="cosmos-hero">
