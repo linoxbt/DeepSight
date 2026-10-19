@@ -89,6 +89,7 @@ class ImportIn(BaseModel):
 class ClaimIn(BaseModel):
     analysis_id: str
     acknowledged: bool = False
+    submission_mode: str = Field(default="wallet", pattern="^(wallet|relay)$")
 
 
 class PublishIn(BaseModel):
@@ -235,6 +236,7 @@ def _claim_out(row: ClaimRow) -> dict[str, Any]:
         "id": row.id,
         "analysis_id": row.analysis_id,
         "owner": row.owner,
+        "submission_mode": "wallet" if manifest.get("claimant_address", "").lower() == row.owner else "relay",
         "public": row.public,
         "chain_protocol_result": row.chain_protocol_result,
         "chain_rationale": row.chain_rationale,
@@ -573,7 +575,7 @@ def preflight(body: ClaimIn, user: str = Depends(current_user)) -> dict[str, Any
             fit=payload["metrics"],
             series_sha256=row.series_sha256,
             analysis_id=row.id,
-            claimant_address=os.environ.get("DEEPSIGHT_RELAY_ADDRESS", user).lower(),
+            claimant_address=(user if body.submission_mode == "wallet" else os.environ.get("DEEPSIGHT_RELAY_ADDRESS", "")).lower(),
             researcher_address=user,
             cross_match=payload["cross_match"],
             snapshot_sha256=payload["cross_match"]["query_snapshot_sha256"],
@@ -598,6 +600,8 @@ def create_claim(body: ClaimIn, user: str = Depends(current_user)) -> dict[str, 
             status_code=422,
             detail="Acknowledge that protocol review is not a scientific confirmation",
         )
+    if body.submission_mode == "relay" and not os.environ.get("DEEPSIGHT_RELAY_ADDRESS", ""):
+        raise HTTPException(503, "Relay wallet is not configured; create a wallet-owned claim")
     with SessionLocal() as session:
         analysis = _analysis_or_404(session, body.analysis_id)
         require_owner(analysis, user)
@@ -916,13 +920,15 @@ def create_radio_claim(body: ClaimIn, user: str = Depends(current_user)) -> dict
             status_code=422,
             detail="Acknowledge that protocol review is not a scientific confirmation",
         )
+    if body.submission_mode == "relay" and not os.environ.get("DEEPSIGHT_RELAY_ADDRESS", ""):
+        raise HTTPException(503, "Relay wallet is not configured; create a wallet-owned claim")
     with SessionLocal() as session:
         row = session.get(RadioAnalysisRow, body.analysis_id)
         if row is None:
             raise HTTPException(status_code=404, detail="Radio analysis not found")
         require_owner(row, user)
         result = json.loads(row.payload_json)
-        built = build_radio_manifest(result, analysis_id=row.id, git_commit=_git_commit(), claimant_address=os.environ.get("DEEPSIGHT_RELAY_ADDRESS", user).lower(), researcher_address=user)
+        built = build_radio_manifest(result, analysis_id=row.id, git_commit=_git_commit(), claimant_address=(user if body.submission_mode == "wallet" else os.environ.get("DEEPSIGHT_RELAY_ADDRESS", "")).lower(), researcher_address=user)
         text = built["text"]
         digest = built["sha256"]
         existing = session.scalar(select(ClaimRow).where(ClaimRow.manifest_hash == digest))

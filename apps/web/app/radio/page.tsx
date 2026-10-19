@@ -36,6 +36,7 @@ export default function RadioPage() {
   const [catalogNote, setCatalogNote] = useState("");
   const [analysis, setAnalysis] = useState<Analysis | null>(null);
   const [acknowledged, setAcknowledged] = useState(false);
+  const [submissionMode, setSubmissionMode] = useState<"wallet" | "relay">("wallet");
   const [claimId, setClaimId] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState("");
@@ -91,7 +92,7 @@ export default function RadioPage() {
       const response = await fetch("/v1/radio/claims", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ analysis_id: analysis.id, acknowledged }),
+        body: JSON.stringify({ analysis_id: analysis.id, acknowledged, submission_mode: submissionMode }),
       });
       const body = await response.json().catch(() => null);
       if (!body) {
@@ -183,6 +184,12 @@ export default function RadioPage() {
               <label className="check">
                 <input type="checkbox" checked={acknowledged} onChange={(event) => setAcknowledged(event.target.checked)} />
                 <span>I understand this screen checks a calibration product. It does not confirm a signal.</span>
+              </label>
+              <label className="fine">GenLayer submission
+                <select value={submissionMode} onChange={event => setSubmissionMode(event.target.value as "wallet" | "relay")}>
+                  <option value="wallet">My wallet sends transactions (default)</option>
+                  <option value="relay">DeepSight relay sends transactions</option>
+                </select>
               </label>
               <button className="primary" type="button" onClick={createClaim} disabled={!acknowledged || busy === "claim"}>
                 {busy === "claim" ? "Storing…" : "Store radio evidence claim"}

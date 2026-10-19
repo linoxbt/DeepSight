@@ -13,6 +13,7 @@ function EvidenceBuilder() {
   const [items, setItems] = useState<Item[]>([]);
   const [ready, setReady] = useState(false);
   const [ack, setAck] = useState(false);
+  const [submissionMode, setSubmissionMode] = useState<"wallet" | "relay">("wallet");
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
 
@@ -41,7 +42,7 @@ function EvidenceBuilder() {
       const response = await fetch("/v1/claims", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ analysis_id: analysisId, acknowledged: true }),
+        body: JSON.stringify({ analysis_id: analysisId, acknowledged: true, submission_mode: submissionMode }),
       });
       const body = await response.json();
       if (!response.ok) throw new Error(body.detail || "Claim was not created");
@@ -79,9 +80,16 @@ function EvidenceBuilder() {
           <input type="checkbox" checked={ack} onChange={(event) => setAck(event.target.checked)} />
           <span>I understand this review checks the evidence package. It does not confirm a planet or a signal.</span>
         </label>
+        <label className="fine">GenLayer submission
+          <select value={submissionMode} onChange={event => setSubmissionMode(event.target.value as "wallet" | "relay")}>
+            <option value="wallet">My wallet sends transactions (default)</option>
+            <option value="relay">DeepSight relay sends transactions</option>
+          </select>
+        </label>
         <button className="primary" type="button" disabled={!ready || !ack || saving} onClick={createClaim}>
           {saving ? "Writing claim…" : "Create evidence claim"}
         </button>
+        <p className="fine muted">{submissionMode === "wallet" ? "The claim is bound to your wallet. On its detail page, you send registration and review transactions and pay StudioNet fees." : "The relay is the on-chain claimant and pays StudioNet fees. You authorize each action with a wallet message signature."}</p>
         {!ready && items.length > 0 ? <p className="fine muted">Fix failing checklist rows before creating a claim.</p> : null}
       </section>
     </Shell>

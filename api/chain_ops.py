@@ -58,6 +58,16 @@ class ReconcileIn(BaseModel):
     evidence: str = Field(min_length=20, max_length=1000)
 
 
+class WalletActionIn(BaseModel):
+    action: str = Field(pattern="^(submit|review|challenge|retract|supersede)$")
+    reason: str = Field(default="", max_length=400)
+    publish_acknowledged: bool = False
+
+
+class WalletTransactionIn(WalletActionIn):
+    tx_hash: str = Field(pattern=r"^0x[0-9a-fA-F]{64}$")
+
+
 def claim_for(db, claim_id):
     row = db.get(ClaimRow, claim_id)
     if row is None:
@@ -100,8 +110,138 @@ def config():
     cfg = chain.load_config()
     return {"configured": cfg is not None, "contract_address": cfg["address"] if cfg else None,
             "relay_enabled": os.environ.get("DEEPSIGHT_RELAY_ENABLED") == "1",
-            "signing_mode": "signed_intent_relay", "network": "GenLayer StudioNet",
-            "note": "Your signature authorizes this exact operation. The server relay pays fees and is the on-chain claimant."}
+            "signing_mode": "wallet_or_signed_intent_relay", "network": "GenLayer StudioNet",
+            "note": "New wallet-owned claims send transactions from the connected wallet. Earlier relay claims use signed intents."}
+
+
+def _wallet_stage(claim, action, user, reason):
+    manifest = json.loads(claim.manifest_json)
+    if (manifest.get("claimant_address", "").lower() != claim.owner
+            or manifest.get("researcher_address", "").lower() != claim.owner):
+        raise HTTPException(409, "This claim is relay-owned; use its signed relay action")
+    if action != "challenge" and claim.owner != user:
+        raise HTTPException(403, "Only the wallet claimant may send this transaction")
+    if action == "review":
+        require_owner(claim, user)
+        if not claim.chain_claim_id or claim.status != "EVIDENCE_READY":
+            raise HTTPException(409, "Register this claim before requesting on-chain review")
+        return "review"
+    eligible(claim, action, user)
+    if action == "challenge" and len(reason.strip()) < 20:
+        raise HTTPException(422, "Provide a challenge reason of at least 20 characters")
+    return "register" if action == "submit" else action
+
+
+def _publish_for_wallet(db, claim, action, user, payload, acknowledged):
+    manifest = json.loads(claim.manifest_json)
+    if action in ("submit", "supersede") and not acknowledged:
+        raise HTTPException(422, "Acknowledge that this action publishes the manifest and evidence before your wallet is prompted")
+    if action == "submit":
+        if sha256_text(claim.manifest_json) != claim.manifest_hash or len(claim.manifest_json) > 8000:
+            raise HTTPException(422, "Manifest checksum or contract length check failed")
+        env = manifest.get("analysis", {}).get("environment_sha256")
+        if not env:
+            raise HTTPException(422, "Rebuild evidence with a reproducible environment")
+        evidence.read(env)
+        if manifest.get("archive", {}).get("name") == "MAST":
+            evidence.read_fits(manifest["archive"]["raw_source_sha256"])
+        for match in manifest.get("cross_matches", []):
+            evidence.read(match["query_snapshot_sha256"])
+        for item in manifest.get("artifacts", []):
+            if not str(item.get("uri", "")).startswith("/v1/artifacts/"):
+                raise HTTPException(422, "Regenerate evidence with retrievable artifacts")
+            evidence.read(item["sha256"])
+        evidence.publish_manifest(db, manifest)
+        claim.public = True
+    elif action == "supersede":
+        manifest["supersedes"] = claim.manifest_hash
+        replacement_text = canonicalize(manifest)
+        replacement_hash = sha256_text(replacement_text)
+        replacement = db.scalar(select(ClaimRow).where(ClaimRow.manifest_hash == replacement_hash))
+        if replacement and (replacement.owner != user or replacement.supersedes != claim.id or replacement.status != "PENDING_CHAIN"):
+            raise HTTPException(409, "A different replacement uses this manifest hash")
+        replacement_id = replacement.id if replacement else "clm_" + secrets.token_hex(6)
+        if replacement is None:
+            db.add(ClaimRow(id=replacement_id, analysis_id=claim.analysis_id, owner=user,
+                            manifest_json=replacement_text, manifest_hash=replacement_hash,
+                            status="PENDING_CHAIN", public=True, supersedes=claim.id,
+                            created_at=claim.updated_at, updated_at=claim.updated_at))
+        evidence.publish_manifest(db, manifest)
+        payload.update(replacement_id=replacement_id, replacement_hash=replacement_hash)
+        claim.public = True
+
+
+@router.post("/claims/{claim_id}/wallet/prepare")
+def prepare_wallet(claim_id: str, body: WalletActionIn, user: str = Depends(current_user)):
+    with SessionLocal() as db:
+        claim = claim_for(db, claim_id)
+        cfg = config_for_claim(claim)
+        if not cfg:
+            raise HTTPException(503, "GenLayer contract is not configured")
+        stage = _wallet_stage(claim, body.action, user, body.reason)
+        idle(db, claim_id)
+        payload = {"contract": cfg["address"], "manifest_hash": claim.manifest_hash,
+                   "reason": body.reason.strip(), "action": body.action}
+        _publish_for_wallet(db, claim, body.action, user, payload, body.publish_acknowledged)
+        command = _command(type("Pending", (), {"stage": stage})(), claim, payload)
+        db.commit()
+        return {"contract": cfg["address"], "method": command["method"], "args": command["args"],
+                "stage": stage, "manifest_hash": claim.manifest_hash,
+                "note": "Your wallet will send and pay for this GenLayer StudioNet transaction. The manifest and evidence are public."}
+
+
+@router.post("/claims/{claim_id}/wallet/transaction", status_code=202)
+def attach_wallet_transaction(claim_id: str, body: WalletTransactionIn, user: str = Depends(current_user)):
+    with SessionLocal() as db:
+        claim = claim_for(db, claim_id)
+        cfg = config_for_claim(claim)
+        if not cfg:
+            raise HTTPException(503, "GenLayer contract is not configured")
+        existing = db.scalar(select(ChainOperation).where(ChainOperation.tx_hash == body.tx_hash))
+        if existing:
+            if existing.claim_id == claim_id and existing.actor == user and existing.action == body.action:
+                return {"id": existing.id, "status": existing.status}
+            raise HTTPException(409, "Transaction is already attached to another operation")
+        stage = _wallet_stage(claim, body.action, user, body.reason)
+        idle(db, claim_id)
+        if not claim.public:
+            raise HTTPException(409, "Prepare and publish the evidence before sending a transaction")
+        inspected = chain.invoke({"action": "inspect", "tx_hash": body.tx_hash}, cfg)
+        if not inspected.get("ok"):
+            raise HTTPException(422, "Transaction is not visible on GenLayer yet; retry attaching this hash")
+        if inspected.get("from", "").lower() != user or inspected.get("to", "").lower() != cfg["address"].lower():
+            raise HTTPException(403, "Transaction sender or contract does not match this claim")
+        payload = {"contract": cfg["address"], "manifest_hash": claim.manifest_hash,
+                   "reason": body.reason.strip(), "action": body.action}
+        if body.action == "supersede":
+            _publish_for_wallet(db, claim, body.action, user, payload, body.publish_acknowledged)
+        expected = _command(type("Pending", (), {"stage": stage})(), claim, payload)
+        decoded = inspected.get("decoded")
+        call = decoded.get("callData") if isinstance(decoded, dict) else None
+        if (not isinstance(call, dict) or call.get("method") != expected["method"]
+                or call.get("args", []) != expected["args"]):
+            raise HTTPException(403, "Transaction method or arguments do not match this claim")
+        changed = db.execute(update(ClaimRow).where(
+            ClaimRow.id == claim.id, ClaimRow.revision == claim.revision,
+            ClaimRow.chain_status == claim.chain_status, ClaimRow.status == claim.status,
+        ).values(chain_status="SUBMITTED", revision=ClaimRow.revision + 1))
+        if changed.rowcount != 1:
+            db.rollback()
+            raise HTTPException(409, "Another claim transaction was attached; refresh before retrying")
+        db.refresh(claim)
+        op = ChainOperation(id="op_" + secrets.token_hex(16), claim_id=claim_id, actor=user,
+                            action=body.action, stage=stage, status="submitted", payload=canonicalize(payload),
+                            authorization="wallet_transaction", signature="", tx_hash=body.tx_hash,
+                            updated=int(time.time()))
+        db.add(op)
+        txs = json.loads(claim.chain_tx or "{}")
+        txs[stage] = body.tx_hash
+        claim.chain_tx = json.dumps(txs)
+        claim.chain_status = "SUBMITTED"
+        claim.chain_execution = "UNKNOWN"
+        event(db, claim, "SUBMITTED", f"Wallet {stage} transaction {body.tx_hash}")
+        db.commit()
+        return {"id": op.id, "status": op.status}
 
 
 @router.post("/claims/{claim_id}/intent")
@@ -377,6 +517,10 @@ def _finish(db, op, claim, cfg, payload):
         if not result.get("ok") or not found:
             raise RuntimeError("Registered claim not readable yet")
         claim.chain_claim_id = found
+        if op.authorization == "wallet_transaction":
+            op.status, op.error = "done", ""
+            event(db, claim, "REGISTERED", f"Wallet registration finalized as {found}. On-chain review is ready.")
+            return
         op.stage, op.status, op.tx_hash, op.error = "review", "queued", "", ""
         claim.chain_status = "QUEUED"
         return
@@ -415,6 +559,10 @@ def _finish(db, op, claim, cfg, payload):
         claim.superseded_by = replacement.id
         claim.status = "SUPERSEDED"
         event(db, claim, "SUPERSEDED", f"Chain replacement {replacement.id} finalized")
+        if op.authorization == "wallet_transaction":
+            op.status, op.error = "done", ""
+            replacement.chain_status = "FINALIZED"
+            return
         op.claim_id = replacement.id
         op.stage, op.status, op.tx_hash, op.error = "review", "queued", "", ""
         replacement.chain_status = "QUEUED"

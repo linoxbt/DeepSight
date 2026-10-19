@@ -44,6 +44,38 @@ test("claim page separates local policy and chain outcome and offers exact downl
   await expect(page.getByRole("button", { name: "Sign retraction" })).toHaveCount(0);
 });
 
+test("wallet-owned claim offers a wallet transaction instead of a relay signature", async ({ page }) => {
+  await page.route("**/v1/auth/session", route => route.fulfill({ json: { address: "0x1111111111111111111111111111111111111111" } }));
+  await page.route("**/v1/claims/clm_wallet", route => route.fulfill({ json: {
+    id: "clm_wallet", owner: "0x1111111111111111111111111111111111111111", submission_mode: "wallet",
+    status: "EVIDENCE_READY", public: false, manifest_hash: "a".repeat(64), chain_claim_id: "",
+    chain_status: "not_submitted", chain_tx: "", chain_protocol_result: "", chain_execution: "",
+    scientific_status: "unconfirmed_candidate", scientific_confirmation: false, target_id: "TIC-1",
+    policy_version: "celestial-v4", manifest: { archive: { name: "MAST" }, limitations: [], metrics: [] },
+  } }));
+  await page.route("**/v1/claims/clm_wallet/timeline", route => route.fulfill({ json: { events: [] } }));
+  await page.route("**/v1/claims/clm_wallet/finality", route => route.fulfill({ json: { reason: "Not submitted" } }));
+  await page.route("**/v1/claims/clm_wallet/operations", route => route.fulfill({ json: { operations: [] } }));
+  await page.route("**/v1/chain/config", route => route.fulfill({ json: { configured: true, relay_enabled: true, contract_address: "0x5cfaE959BbFF6Be9e4A1F477abDCc61fAfD5eeb1" } }));
+  await page.route("**/v1/research/attestations?claim_id=clm_wallet", route => route.fulfill({ json: { attestations: [] } }));
+  await page.goto("/claims/clm_wallet");
+  await expect(page.getByRole("button", { name: "Send registration from my wallet" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Sign relay submission" })).toHaveCount(0);
+});
+
+test("evidence builder defaults to wallet ownership and offers the relay fallback", async ({ page }) => {
+  await page.route("**/v1/auth/session", route => route.fulfill({ status: 401, json: { detail: "Sign in" } }));
+  await page.route("**/v1/evidence/preflight", route => route.fulfill({ json: { ready: true, items: [] } }));
+  await page.route("**/v1/claims", route => route.fulfill({ json: { id: "clm_relay_choice" } }));
+  await page.goto("/evidence?analysis=an_choice");
+  await expect(page.getByRole("combobox", { name: "GenLayer submission" })).toHaveValue("wallet");
+  await page.getByRole("combobox", { name: "GenLayer submission" }).selectOption("relay");
+  await page.getByRole("checkbox").check();
+  const submitted = page.waitForRequest(request => request.url().endsWith("/v1/claims") && request.method() === "POST");
+  await page.getByRole("button", { name: "Create evidence claim" }).click();
+  expect((await submitted).postDataJSON().submission_mode).toBe("relay");
+});
+
 test("saved research runs link back to their completed analysis", async ({ page }) => {
   await page.route("**/v1/auth/session", route => route.fulfill({ status: 401, json: { detail: "Sign in" } }));
   await page.route("**/v1/jobs", route => route.fulfill({ json: { jobs: [{ id: "job_saved", kind: "analysis", status: "succeeded", error: "", created: 1700000000, href: "/lab?analysis=an_saved" }] } }));

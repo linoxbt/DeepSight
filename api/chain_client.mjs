@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { createAccount, createClient } from "genlayer-js";
+import { abi, createAccount, createClient } from "genlayer-js";
 import { studionet } from "genlayer-js/chains";
 import { Wallet } from "ethers";
 import { executionStatus } from "./chain_execution.mjs";
@@ -25,6 +25,13 @@ try {
     const execution = executionStatus(receipt);
     emit({ ok: true, status: receipt?.statusName || receipt?.status_name || String(receipt?.status || ""),
       execution, rounds: Number(receipt?.numOfRounds ?? 0), result: receipt?.resultName ?? receipt?.result ?? null });
+  } else if (input.action === "inspect") {
+    const tx = await client.getTransaction({ hash: input.tx_hash });
+    const raw = tx?.data?.calldata?.base64;
+    const decodedCall = raw ? abi.calldata.decode(Uint8Array.from(Buffer.from(raw, "base64"))) : null;
+    const callData = decodedCall instanceof Map ? Object.fromEntries(decodedCall) : decodedCall;
+    emit({ ok: true, from: tx?.from_address || tx?.sender || "", to: tx?.to_address || tx?.recipient || "",
+      decoded: tx?.txDataDecoded || (callData ? { callData } : null), status: tx?.statusName || "" });
   } else {
     throw new Error("Unsupported chain action");
   }

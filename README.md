@@ -83,7 +83,7 @@ Configure the same settings on API and worker:
 
 - `DEEPSIGHT_ORIGIN`: exact browser origin; HTTPS enables secure session cookies.
 - `DEEPSIGHT_CONTRACT_ADDRESS`: actual deployed contract address.
-- `DEEPSIGHT_RELAY_ADDRESS`: address of the relay account that sends contract transactions. Set this before creating claims intended for chain submission; the canonical manifest binds this address and separately records the researcher's address.
+- `DEEPSIGHT_RELAY_ADDRESS`: address of the optional legacy relay account. New claims default to wallet ownership and bind the researcher's address as the on-chain claimant.
 - `DEEPSIGHT_KEYSTORE`, `DEEPSIGHT_CHAIN_PASSWORD`: encrypted relay account access.
 - `DEEPSIGHT_RELAY_ENABLED=1`: explicitly enable broadcasting.
 - `DEEPSIGHT_REVIEWERS`: comma-separated wallet addresses allowed to add review notes.
@@ -94,15 +94,35 @@ Configure the same settings on API and worker:
   revision. Railway's `RAILWAY_GIT_COMMIT_SHA` is used automatically when present;
   otherwise evidence records a checksum of the running Python sources.
 
-The relay is **the on-chain claimant** and pays network fees. Each researcher
-signs a separate operation message binding their identity, origin, contract,
-manifest hash, action, parameters, nonce, and expiry. Both message and signature
-are retained. This is a relay model, not direct wallet transaction submission.
+New claims default to **wallet-owned GenLayer transactions**. The connected wallet
+sends and pays for registration, evidence review, challenges, retractions, and
+replacements. The API publishes the evidence before registration, verifies the
+transaction sender, contract, method, and exact arguments on StudioNet, and the
+worker waits for successful finality before recording an on-chain outcome.
+The app asks for explicit publication consent before that preparation step;
+publication still happens if the user later cancels the wallet transaction.
+Registration and review are separate wallet confirmations. The browser retains
+a pending transaction hash in local storage so it can be attached again after
+an interrupted API response. Raw FITS and image bytes remain in content-addressed
+storage; the canonical manifest and its artifact hashes are anchored on-chain.
+
+Older relay-owned claims retain their signed-intent path. For those claims the
+relay pays fees and is the on-chain claimant; the researcher signs a separate
+operation message binding identity, origin, contract, manifest hash, action,
+parameters, nonce, and expiry.
 
 A signed operation enters the outbox. Registration must finalize successfully
 before review is broadcast. `ACCEPTED` remains provisional. A finalized failed
 execution is reported as a failure, not successful finality. Local policy preview
 and chain policy outcomes have separate fields.
+
+A live wallet-origin StudioNet test finalized registration, review, independent
+challenge, replacement, replacement review, and retraction. The test used a
+disposable EIP-1193 provider harness with an `eth_sendTransaction` handler;
+human-operated Reown wallet confirmation remains a separate acceptance check.
+The [registration](https://explorer-studio.genlayer.com/tx/0xe7faaea95f4c16a0745e75ff1b5e5e607f6df9f117e74fa82775a310fafc41e2)
+and [review](https://explorer-studio.genlayer.com/tx/0x3274ea3522b3ca8275381381972093ed6c82d6957369deb0c883b4619349f9f6)
+belong to hosted claim `clm_092f3f5afa85`.
 
 On network read failures the worker retries reconciliation. If broadcasting
 fails before returning a hash, the operation is marked `unknown` and blocks

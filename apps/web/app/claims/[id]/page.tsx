@@ -3,6 +3,7 @@
 import { useParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { ChainAction } from "@/components/ChainAction";
+import { WalletChainAction } from "@/components/WalletChainAction";
 import { api } from "@/lib/api";
 import { studioContractUrl, studioTransactionUrl } from "@/lib/genlayer";
 import { Shell } from "@/components/Shell";
@@ -10,6 +11,7 @@ import { Shell } from "@/components/Shell";
 type Claim = {
   id: string;
   owner: string;
+  submission_mode?: "wallet" | "relay";
   public: boolean;
   chain_protocol_result: string;
   chain_rationale: string;
@@ -53,6 +55,7 @@ export default function ClaimDetailPage() {
   const [chainConfig, setChainConfig] = useState<ChainConfig | null>(null);
   const refreshSeq = useRef(0);
   const owns = !!viewer && viewer === claim?.owner;
+  const chainPending = operations.some(op => ["queued", "broadcasting", "submitted", "reconciling", "unknown"].includes(op.status));
 
   async function load() {
     const sequence = ++refreshSeq.current;
@@ -114,8 +117,14 @@ export default function ClaimDetailPage() {
               {busy.endsWith("publish") ? "Publishing…" : "Publish claim and evidence publicly"}
             </button>
           ) : null}
-          {owns && claim && chainConfig?.relay_enabled && !claim.chain_claim_id && ["EVIDENCE_READY", "FINALIZED", "NEEDS_REVIEW"].includes(claim.status) ? (
-            <ChainAction claimId={claim.id} action="submit" label="Sign and submit to StudioNet" onQueued={load} />
+          {owns && claim && !claim.chain_claim_id && ["EVIDENCE_READY", "FINALIZED", "NEEDS_REVIEW"].includes(claim.status) ? (
+            claim.submission_mode === "wallet" && chainConfig?.configured
+              ? <WalletChainAction claimId={claim.id} action="submit" label="Send registration from my wallet" pending={chainPending} onQueued={load} />
+              : claim.submission_mode !== "wallet" && chainConfig?.relay_enabled
+                ? <ChainAction claimId={claim.id} action="submit" label="Sign relay submission" onQueued={load} /> : null
+          ) : null}
+          {owns && claim?.submission_mode === "wallet" && claim.chain_claim_id && claim.status === "EVIDENCE_READY" && chainConfig?.configured ? (
+            <WalletChainAction claimId={claim.id} action="review" label="Send on-chain evidence review" pending={chainPending} onQueued={load} />
           ) : null}
         </div>
       </header>
@@ -139,9 +148,10 @@ export default function ClaimDetailPage() {
             <p className="mono">{claim.chain_protocol_result || "No chain decision"}</p>
             <p>{claim.chain_rationale}</p>
             <p>Consensus: {claim.chain_status} · Execution: {claim.chain_execution || "Not submitted"}</p>
-            <p className="fine muted">Signing a chain submission publishes this claim, its evidence, and your wallet address. The DeepSight relay pays fees and is the on-chain claimant.</p>
+            <p className="fine muted">{claim.submission_mode === "wallet" ? "Your connected wallet sends and pays for each GenLayer transaction. Registration anchors the manifest hash; the separate review transaction runs contract policy. The manifest, evidence, and wallet address become public." : "Signing a relay submission publishes this claim, its evidence, and your wallet address. The DeepSight relay pays fees and is the on-chain claimant."}</p>
+            {claim.submission_mode === "wallet" ? <p className="fine muted">Need test GEN? Open <a href="https://studio.genlayer.com" target="_blank" rel="noopener noreferrer">GenLayer Studio ↗</a> and use the faucet in its account selector.</p> : null}
             {(claim.chain_contract_address || chainConfig?.contract_address) ? <p className="fine"><a href={studioContractUrl(claim.chain_contract_address || chainConfig!.contract_address!)} target="_blank" rel="noopener noreferrer">View Proof of Discovery on GenLayer StudioNet ↗</a></p> : null}
-            {chainConfig && !chainConfig.relay_enabled ? <p className="callout">StudioNet submissions are temporarily unavailable. Existing chain records remain visible.</p> : null}
+            {chainConfig && !chainConfig.configured ? <p className="callout">StudioNet submissions are temporarily unavailable. Existing chain records remain visible.</p> : null}
             {operations.map(op => <div key={op.id} className="event"><strong>{op.action} · {op.stage} · {op.status}</strong><p className="hash mono">{op.tx_hash ? <a href={studioTransactionUrl(op.tx_hash)} target="_blank" rel="noopener noreferrer">{op.tx_hash} ↗</a> : "Awaiting transaction"}</p>{op.error && <p role="alert">{op.error}</p>}</div>)}
           </section>
           <section className="panel">
@@ -169,13 +179,13 @@ export default function ClaimDetailPage() {
                 <input aria-label="Challenge reason" value={reason} onChange={(event) => setReason(event.target.value)} style={{ background: "transparent", border: "1px solid var(--line)", padding: "8px 10px", minWidth: 280 }} />
                 {!claim.chain_claim_id && <button className="primary" type="submit" disabled={reason.trim().length < 20 || busy !== ""}>Record challenge</button>}
               </form>
-              {claim.chain_claim_id && chainConfig?.relay_enabled && <ChainAction claimId={claim.id} action="challenge" reason={reason} label="Sign challenge" onQueued={load} />}
+              {claim.chain_claim_id && (claim.submission_mode === "wallet" ? chainConfig?.configured && <WalletChainAction claimId={claim.id} action="challenge" reason={reason} label="Send challenge from my wallet" pending={chainPending} onQueued={load} /> : chainConfig?.relay_enabled && <ChainAction claimId={claim.id} action="challenge" reason={reason} label="Sign challenge" onQueued={load} />)}
             </section>
           ) : null}
           {owns && !["RETRACTED", "SUPERSEDED"].includes(claim.status) && (
             <section className="panel actions">
-              {claim.chain_claim_id ? (chainConfig?.relay_enabled && <ChainAction claimId={claim.id} action="retract" label="Sign retraction" onQueued={load} />) : <button className="ghost" disabled={!!busy} onClick={() => act(`/v1/claims/${params.id}/retract`)}>Retract local claim</button>}
-              {["FINALIZED", "NEEDS_REVIEW", "CHALLENGED"].includes(claim.status) && (claim.chain_claim_id ? (chainConfig?.relay_enabled && <ChainAction claimId={claim.id} action="supersede" label="Sign replacement" onQueued={load} />) : <button className="ghost" disabled={!!busy} onClick={() => act(`/v1/claims/${params.id}/supersede`)}>Create replacement</button>)}
+              {claim.chain_claim_id ? (claim.submission_mode === "wallet" ? chainConfig?.configured && <WalletChainAction claimId={claim.id} action="retract" label="Send retraction from my wallet" pending={chainPending} onQueued={load} /> : chainConfig?.relay_enabled && <ChainAction claimId={claim.id} action="retract" label="Sign retraction" onQueued={load} />) : <button className="ghost" disabled={!!busy} onClick={() => act(`/v1/claims/${params.id}/retract`)}>Retract local claim</button>}
+              {["FINALIZED", "NEEDS_REVIEW", "CHALLENGED"].includes(claim.status) && (claim.chain_claim_id ? (claim.submission_mode === "wallet" ? chainConfig?.configured && <WalletChainAction claimId={claim.id} action="supersede" label="Send replacement from my wallet" pending={chainPending} onQueued={load} /> : chainConfig?.relay_enabled && <ChainAction claimId={claim.id} action="supersede" label="Sign replacement" onQueued={load} />) : <button className="ghost" disabled={!!busy} onClick={() => act(`/v1/claims/${params.id}/supersede`)}>Create replacement</button>)}
             </section>
           )}
           {claim.manifest ? (

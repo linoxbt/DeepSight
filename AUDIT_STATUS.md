@@ -1,6 +1,8 @@
 # DeepSight audit remediation status
 
-Updated 2026-10-18. **Not production ready.** The public Netlify site uses a dedicated Railway project with a live Python API, worker, PostgreSQL and S3-compatible bucket. The v4 GenLayer contract is finalized and the relay is enabled. Scientific source reproduction and live social-login verification remain open. This release was deployed as Railway API `7f7cae28-0ae8-4e7f-a77a-95417374054d`, worker `246105f9-2805-484c-b39c-1bae1d4d59cc`, and Netlify `6ad521c69924f9dfc7e88071`.
+Updated 2026-10-19. **Not production ready.** The public Netlify site uses a dedicated Railway project with a live Python API, worker, PostgreSQL and S3-compatible bucket. The v4 GenLayer contract is finalized. New claim creation defaults to binding the user's wallet as on-chain claimant, with a visible relay fallback. The direct-wallet StudioNet path covers registration, evidence review, challenge, retraction, and supersession. Preparing a publication requires an explicit acknowledgment because evidence becomes public before the wallet prompt. Scientific source reproduction and live social-login verification remain open. The final API release is Railway `b49a7ae9-2f0f-4163-bd8b-f84203b1caf9`; worker `6291ac2b-a15a-4222-999a-aa26888de217`; Netlify `6ad60084ff68f0852deeff64`.
+
+The direct-wallet change is verified with backend tests, exact StudioNet calldata decoding, and live EIP-1193-provider transactions signed by disposable wallets. On hosted claim `clm_092f3f5afa85`, registration `0xe7faaea95f4c16a0745e75ff1b5e5e607f6df9f117e74fa82775a310fafc41e2` and review `0x3274ea3522b3ca8275381381972093ed6c82d6957369deb0c883b4619349f9f6` finalized as on-chain `NEEDS_HUMAN_REVIEW`. A second wallet's challenge `0x277d20deb80ff33ea1deb9f6bf69e54c67de040e8770b59a1435f51880c7a8a4` finalized; the owner then finalized replacement `0x3f3c210b7ee7a2f4a753d3da3fee138fca68e2b689286dfbc1bd9d7055b2aeee`, replacement review `0x7803738809a14c406c41d4a7272d8c39006fcb5f27fb8185d010920890596c47`, and retraction `0x6e19c7386f019c088a00d9fa89b6ddf75c2d58180ee417d5c80d37ab002c65c7`. The provider harness used a disposable private key to answer `eth_sendTransaction`; a human-operated Reown wallet confirmation has not been tested live. Existing relay-owned claims continue through signed relay intents. Image notebook entries, imports, analyses, and human attestations remain off-chain; only a submitted claim anchors the manifest and its artifact hashes.
 
 ## Current remediation
 
@@ -61,9 +63,9 @@ Updated 2026-10-18. **Not production ready.** The public Netlify site uses a ded
 
 ## Verification
 
-- Latest full backend suite: `.venv/bin/python -m pytest api/tests -q`: 85 passed, including malformed NASA TAP and network-error regressions.
+- Latest full backend suite: `.venv/bin/python -m pytest api/tests -q`: 88 passed, including wallet-owned transaction reconciliation, malformed NASA TAP and network-error regressions.
 - `node --test api/tests/chain_execution.test.mjs`: passed.
-- `npm run build --prefix apps/web`: passed; `npm run test:browser --prefix apps/web`: 11 passed. Browser tests mock API data.
+- `npm run build --prefix apps/web`: passed; `npm run test:browser --prefix apps/web`: 13 passed after the final UI update. Browser tests mock API data.
 - Isolated PostgreSQL 16: Alembic upgraded through 0005; `DEEPSIGHT_REQUIRE_MIGRATIONS=1` startup check passed. SQLite migration checks passed.
 - `uv pip install -r requirements.lock --dry-run`, `POSTGRES_PASSWORD=dev-only-validation docker compose config --quiet`, and `git diff --check`: passed.
 - Public Netlify-to-Railway live smoke passed: health and registry reads; disposable EOA challenge, signature session and logout; private S3 image upload/read/notes; queued MAST import, BLS analysis, evidence preflight and local claim bundle; radio worker analysis. Test records remain private to their disposable wallets.

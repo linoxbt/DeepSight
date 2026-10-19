@@ -319,6 +319,91 @@ def test_outbox_waits_for_successful_finality_and_persists_chain_result(monkeypa
     assert len([c for c in calls if c["action"] == "broadcast"]) == 2
 
 
+def test_wallet_transactions_are_verified_and_reviewed_without_relay(monkeypatch):
+    insert_claim()
+    contract = "0x" + "3" * 40
+    monkeypatch.setenv("DEEPSIGHT_RELAY_ENABLED", "0")
+    monkeypatch.setattr("api.chain.load_config", lambda: {"address": contract})
+    calls = []
+    def invoke(command, config):
+        calls.append(command)
+        if command["action"] == "inspect":
+            with SessionLocal() as db:
+                claim = db.get(ClaimRow, "clm_test")
+                stage = "review" if claim.chain_claim_id else "register"
+                payload = {"contract": contract, "manifest_hash": claim.manifest_hash}
+                expected = chain_ops._command(type("Op", (), {"stage": stage})(), claim, payload)
+            return {"ok": True, "from": OWNER, "to": contract,
+                    "decoded": {"callData": {"method": expected["method"], "args": expected["args"]}}}
+        if command["action"] == "receipt":
+            return {"ok": True, "status": "FINALIZED", "execution": "SUCCESS"}
+        if command["method"] == "read_claim_by_manifest":
+            return {"ok": True, "result": {"claim_id": "pod-wallet"}}
+        return {"ok": True, "result": {"status": "NEEDS_REVIEW", "protocol_result": "NEEDS_HUMAN_REVIEW", "rationale": "Archive unavailable"}}
+    monkeypatch.setattr("api.chain.invoke", invoke)
+    with TestClient(app) as client:
+        assert client.post("/v1/claims/clm_test/wallet/prepare", json={"action": "submit"}).status_code == 422
+        with SessionLocal() as db:
+            assert db.get(ClaimRow, "clm_test").public is False
+        prepared = client.post("/v1/claims/clm_test/wallet/prepare", json={"action": "submit", "publish_acknowledged": True})
+        assert prepared.status_code == 200, prepared.text
+        assert prepared.json()["method"] == "register_claim"
+        bad = client.post("/v1/claims/clm_test/wallet/transaction", json={"action": "submit", "tx_hash": "0x" + "a" * 64})
+        assert bad.status_code == 202, bad.text
+        assert client.post("/v1/claims/clm_test/wallet/transaction", json={"action": "submit", "tx_hash": "0x" + "a" * 64}).status_code == 202
+        assert chain_ops.execute_one()
+        assert not any(call["action"] == "broadcast" for call in calls)
+        with SessionLocal() as db:
+            claim = db.get(ClaimRow, "clm_test")
+            assert claim.chain_claim_id == "pod-wallet"
+            assert db.get(ChainOperation, bad.json()["id"]).status == "done"
+        review = client.post("/v1/claims/clm_test/wallet/prepare", json={"action": "review"})
+        assert review.status_code == 200
+        assert review.json()["method"] == "request_evidence_review"
+        attached = client.post("/v1/claims/clm_test/wallet/transaction", json={"action": "review", "tx_hash": "0x" + "b" * 64})
+        assert attached.status_code == 202, attached.text
+        assert chain_ops.execute_one()
+        with SessionLocal() as db:
+            claim = db.get(ClaimRow, "clm_test")
+            assert claim.chain_protocol_result == "NEEDS_HUMAN_REVIEW"
+            assert claim.status == "NEEDS_REVIEW"
+            assert db.get(ChainOperation, attached.json()["id"]).status == "done"
+
+
+def test_wallet_transaction_rejects_other_sender_and_call(monkeypatch):
+    insert_claim()
+    contract = "0x" + "3" * 40
+    monkeypatch.setattr("api.chain.load_config", lambda: {"address": contract})
+    with SessionLocal() as db:
+        db.get(ClaimRow, "clm_test").public = True
+        db.commit()
+    with TestClient(app) as client:
+        monkeypatch.setattr("api.chain.invoke", lambda *args: {"ok": True, "from": OTHER, "to": contract,
+            "decoded": {"callData": {"method": "register_claim", "args": []}}})
+        assert client.post("/v1/claims/clm_test/wallet/transaction", json={"action": "submit", "tx_hash": "0x" + "a" * 64}).status_code == 403
+        monkeypatch.setattr("api.chain.invoke", lambda *args: {"ok": True, "from": OWNER, "to": contract,
+            "decoded": {"callData": {"method": "retract_claim", "args": ["pod-other"]}}})
+        assert client.post("/v1/claims/clm_test/wallet/transaction", json={"action": "submit", "tx_hash": "0x" + "a" * 64}).status_code == 403
+
+
+def test_other_researcher_can_prepare_wallet_challenge(monkeypatch):
+    insert_claim(status="NEEDS_REVIEW")
+    monkeypatch.setattr("api.chain.load_config", lambda: {"address": "0x" + "3" * 40})
+    with SessionLocal() as db:
+        claim = db.get(ClaimRow, "clm_test")
+        claim.chain_claim_id = "pod-wallet"
+        claim.public = True
+        db.commit()
+    app.dependency_overrides[current_user] = lambda: OTHER
+    with TestClient(app) as client:
+        prepared = client.post("/v1/claims/clm_test/wallet/prepare", json={
+            "action": "challenge", "reason": "Independent reanalysis disputes the result",
+        })
+        assert prepared.status_code == 200, prepared.text
+        assert prepared.json()["method"] == "challenge_claim"
+        assert client.post("/v1/claims/clm_test/wallet/prepare", json={"action": "retract"}).status_code == 403
+
+
 def test_supersede_publishes_replacement_before_broadcast(monkeypatch):
     wallet = Account.create()
     monkeypatch.setenv("DEEPSIGHT_RELAY_ENABLED", "1")
