@@ -1,0 +1,15 @@
+{
+  "network": "studionet",
+  "chain_id": 61999,
+  "origin": "https://deepsight-evidence.netlify.app",
+  "account": "0xb28D299EC4c139742a48a982f2FbFd0aC9d23B86",
+  "tx_hash": "0xc5aa31a5ea8b858d16e6debc9e9b3dd28b7f707c3cf6adb2f736f8dac366be25",
+  "recorded_at": "2026-10-21T16:12:28.207Z",
+  "contract_address": "0x10852d994e4a96592EdF464BDfB42ED2A3819451",
+  "checked_at": "2026-10-21T16:13:27.850Z",
+  "finalized_execution": "SUCCESS",
+  "code_matches_source": true,
+  "source_sha256": "803487e108a02a3d3bbfa465ef781213868ae2b4880b954ef637d47dca62c39b",
+  "deployed_code_sha256": "803487e108a02a3d3bbfa465ef781213868ae2b4880b954ef637d47dca62c39b",
+  "read_method_check": "passed"
+}

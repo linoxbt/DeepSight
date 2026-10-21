@@ -71,7 +71,11 @@ def test_studionet_deployment_is_discoverable_without_local_chain_file(monkeypat
     monkeypatch.delenv("DEEPSIGHT_CONTRACT_ADDRESS", raising=False)
     config = load_config()
     assert config is not None
-    assert config["address"] == "0x5cfaE959BbFF6Be9e4A1F477abDCc61fAfD5eeb1"
+    assert config["address"] == "0x10852d994e4a96592EdF464BDfB42ED2A3819451"
+    old = type("Claim", (), {"manifest_json": json.dumps({"policy_version": "celestial-v4"})})()
+    assert chain_ops.config_for_claim(old)["address"] == "0x5cfaE959BbFF6Be9e4A1F477abDCc61fAfD5eeb1"
+    current = type("Claim", (), {"manifest_json": json.dumps({"policy_version": "celestial-v5"})})()
+    assert chain_ops.config_for_claim(current)["address"] == config["address"]
 
 
 def test_packaged_source_revision_is_verifiable_without_git(monkeypatch):

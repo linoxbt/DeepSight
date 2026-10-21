@@ -179,13 +179,16 @@ argument. Validators fetch each published manifest from that fixed origin and
 check its hash, target, and relay claimant before registration. The v4 review
 adds a live NASA period-and-depth comparison for known TIC objects.
 
-The v5 source in [`contracts/proof_of_discovery_v5.py`](contracts/proof_of_discovery_v5.py)
+The deployed v5 source in [`contracts/proof_of_discovery_v5.py`](contracts/proof_of_discovery_v5.py)
 narrows a successful automated verdict to `CATALOGUE_CONSISTENT`: it compares
 submitted values with NASA TAP but does not verify that they came from the
 referenced FITS observation. V5 records one unadjudicated objection without
 changing the underlying review status or result. Existing v4 claims stay on
-their original contract; v5 routing requires a finalized, source-matched
-`deployments/studionet-v5.json` record. No observational or radio signal
+their original contract. The [v5 StudioNet deployment](deployments/studionet-v5.json)
+is finalized at [0x10852d994e4a96592EdF464BDfB42ED2A3819451](https://explorer-studio.genlayer.com/address/0x10852d994e4a96592EdF464BDfB42ED2A3819451);
+its deployed code SHA-256 matches the pinned source at
+`803487e108a02a3d3bbfa465ef781213868ae2b4880b954ef637d47dca62c39b`.
+New-claim routing requires that verified deployment record. No observational or radio signal
 measurement is independently verified by this contract.
 
 ## Deployment
