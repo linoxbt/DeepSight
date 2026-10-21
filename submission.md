@@ -27,18 +27,18 @@ Optional. Leave blank until a direct YouTube video or X post showing the deploye
 | Heading | Instruction |
 | --- | --- |
 | 1. Connect and sign in | Open the website, select **Connect wallet**, connect a StudioNet-capable wallet, then select **Sign in to DeepSight** and approve the message signature. |
-| 2. Load real sky data | Open **Explore the sky** and select **Load TESS example**. The app imports the light curve for TIC 259377017 from NASA MAST. Wait for the import job to finish, then select **Analyze this light curve**. |
+| 2. Load real sky data | Open **Explore the sky**. Under **Have a star in mind?**, enter TIC **256364928** and select **Load light curve**. The app imports a TESS light curve for HD 189733 from NASA MAST. Wait for the job to finish, then select **Analyze this light curve**. |
 | 3. Analyze the observation | In **Discovery Lab**, select the imported TESS target and **Analyze light curve**. Inspect the light curve, phase-folded plot, period search, quality flags, and limitations. |
 | 4. Build the evidence | Select **Build evidence**, read the checklist and uncertainty statement, acknowledge it, keep **My wallet sends transactions** selected, and select **Create evidence claim**. |
 | 5. Register on GenLayer | On the claim page, select **Send registration from my wallet**. Confirm that publishing the manifest and evidence is acceptable, approve the StudioNet transaction in the wallet, and wait for finalized registration. The wallet needs StudioNet test GEN for fees. |
-| 6. Request contract review | Select **Send on-chain evidence review**, approve the second wallet transaction, and wait for finality. Read **Chain evidence decision** and its rationale; a result can require human review if an archive comparison is unavailable. |
+| 6. Request contract review | Select **Send on-chain evidence review**, approve the second wallet transaction, and wait for finality. Read **Chain evidence decision** and its rationale. A catalogue match means consistency only; an archive outage should return **NEEDS_HUMAN_REVIEW**. |
 | 7. Inspect the proof | Open the contract and transaction links on the claim page. Download the canonical manifest and evidence bundle, compare the displayed manifest hash, and inspect the claim timeline. |
 
 If live import or wallet confirmation is unavailable during review, use the already-finalized example below to inspect the real contract path. The example was operated with disposable wallets through an EIP-1193 provider harness, not by a human clicking through Reown.
 
 ## 06 · Review verification — paste into the 500-character field
 
-> The claim page should show a manifest hash, StudioNet contract link, finalized registration and review transactions, and a contract rationale. Review may say NEEDS_HUMAN_REVIEW when NASA archive comparison is unavailable; that is the correct bounded result, not a confirmed planet. Inspect live claim clm_092f3f5afa85 and contract 0x5cfaE959BbFF6Be9e4A1F477abDCc61fAfD5eeb1. Its registration, review, independent challenge, replacement, and retraction are finalized on StudioNet.
+> Inspect claim clm_868cfd805618 and contract 0x5cfaE959BbFF6Be9e4A1F477abDCc61fAfD5eeb1. Its registration and review finalized on StudioNet as EVIDENCE_SUFFICIENT because the submitted period and depth matched a live NASA catalogue row. This is catalogue consistency, not independent FITS reproduction or planet confirmation. A fresh review should instead return NEEDS_HUMAN_REVIEW if NASA TAP is unavailable. The page links the manifest, evidence bundle, contract, transactions, and rationale.
 
 **Contract link 1:** https://explorer-studio.genlayer.com/address/0x5cfaE959BbFF6Be9e4A1F477abDCc61fAfD5eeb1
 
