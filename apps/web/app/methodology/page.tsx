@@ -23,15 +23,17 @@ export default function MethodologyPage() {
           </p>
           <p>
             For a known object with an exact TIC identifier, GenLayer validators query NASA TAP themselves and compare
-            the measured period and transit depth with published values. A mismatch, missing published depth, or an
-            unpublished candidate stays in human review. This comparison does not reprocess the underlying TESS pixels.
+            the submitted period and transit depth with published values. A mismatch, missing published depth, or an
+            unpublished candidate stays in human review. This is catalogue consistency only: validators do not fetch
+            the pinned FITS file, rerun BLS, or prove the submitted values came from that observation.
           </p>
         </section>
         <section className="panel">
           <h2>Outcomes</h2>
-          <p>EVIDENCE_SUFFICIENT means the package met the written checks and the published period and depth agreed with a live archive row. It is not a scientific confirmation.</p>
+          <p>EVIDENCE_SUFFICIENT means the manifest met the written field checks and its submitted period and depth agreed with a live catalogue row. Fabricated values copied from that row could also pass; the result does not verify the underlying measurement or confirm a planet.</p>
           <p>EVIDENCE_INSUFFICIENT means a required field is missing, or the text claims a confirmed discovery.</p>
           <p>NEEDS_HUMAN_REVIEW means a person has to judge provenance or completeness before anyone treats the package as settled.</p>
+          <p>A challenge records an unadjudicated objection and a reason hash on chain. It does not overturn the review, prove misconduct, or receive an on-chain dismissal in this contract version. The owner can supersede or retract the claim.</p>
         </section>
         <section className="panel">
           <h2>What this build does not do</h2>
@@ -49,7 +51,8 @@ export default function MethodologyPage() {
           <p>
             Signal integrity, version signal-v4, requires an observation, a frequency and time range, a noise method,
             calibration, an artifact hash, and at least one RFI test. Missing an off-target comparison stays in human
-            review. The outcome is still not a technosignature.
+            review. Validators do not independently reproduce spectral measurements or RFI exclusion. The outcome is
+            still not a technosignature.
           </p>
         </section>
       </div>

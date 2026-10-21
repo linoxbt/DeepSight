@@ -1,4 +1,5 @@
 import { readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { createClient } from "genlayer-js";
@@ -24,7 +25,10 @@ if (result.status === "FINALIZED" && result.contract_address) {
   const code = await client.getContractCode(result.contract_address);
   result.code_present = Boolean(code);
   if (result.code_present) {
-    result.code_matches_source = code === readFileSync(resolve(root, "contracts/proof_of_discovery.py"), "utf8");
+    const source = readFileSync(resolve(root, "contracts/proof_of_discovery.py"), "utf8");
+    result.source_sha256 = createHash("sha256").update(source).digest("hex");
+    result.deployed_code_sha256 = createHash("sha256").update(code).digest("hex");
+    result.code_matches_source = code === source;
     try {
       const ids = await client.readContract({ address: result.contract_address, functionName: "list_claim_ids", args: [] });
       result.readable = Array.isArray(ids);
@@ -34,9 +38,13 @@ if (result.status === "FINALIZED" && result.contract_address) {
     }
     if (result.code_matches_source && result.readable) {
       record.contract_address = result.contract_address;
-      record.finalized_at = new Date().toISOString();
+      // Verification time is not transaction finality time. Preserve the
+      // original finality observation in the deployment record.
+      record.checked_at = new Date().toISOString();
       record.finalized_execution = "SUCCESS";
       record.code_matches_source = true;
+      record.source_sha256 = result.source_sha256;
+      record.deployed_code_sha256 = result.deployed_code_sha256;
       record.read_method_check = "passed";
       writeFileSync(recordPath, JSON.stringify(record, null, 2) + "\n", { mode: 0o600 });
     }

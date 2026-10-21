@@ -48,6 +48,19 @@ export function WalletChainAction({ claimId, action, label, reason = "", pending
       }
       if (!address || !connector) throw new Error("Connect and sign in with a wallet first.");
       if (chainId !== studionet.id) throw new Error("Switch your wallet to GenLayer StudioNet before submitting.");
+      async function assertWalletContext() {
+        const [accounts, connectedChain, session] = await Promise.all([
+          connector!.getAccounts(), connector!.getChainId(), api<{ address: string }>("/v1/auth/session"),
+        ]);
+        if (connectedChain !== studionet.id) throw new Error("The wallet network changed. Switch back to GenLayer StudioNet and retry.");
+        if (!accounts.some(account => account.toLowerCase() === address!.toLowerCase())) {
+          throw new Error("The wallet account changed. Sign in again with the active account before sending.");
+        }
+        if (session.address.toLowerCase() !== address!.toLowerCase()) {
+          throw new Error("The signed-in DeepSight account differs from the connected wallet. Sign in with the active wallet.");
+        }
+      }
+      await assertWalletContext();
       const provider = await connector.getProvider({ chainId: studionet.id });
       if (!provider || typeof (provider as { request?: unknown }).request !== "function") {
         throw new Error("This wallet does not support GenLayer transactions. Connect a wallet that supports StudioNet.");
@@ -58,6 +71,7 @@ export function WalletChainAction({ claimId, action, label, reason = "", pending
         method: "POST", headers: { "content-type": "application/json" },
         body: JSON.stringify({ action, reason, publish_acknowledged: publishes }),
       });
+      await assertWalletContext();
       const client = createClient({ chain: studionet, account: address, provider: provider as never });
       const txHash = await client.writeContract({
         address: prepared.contract, functionName: prepared.method, args: prepared.args, value: BigInt(0),

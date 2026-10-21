@@ -41,6 +41,37 @@ def test_published_period_and_depth_must_both_match_exact_tic():
     assert "does not match" in verifier([{**row, "tic_id": "TIC 000000000"}])(document)
 
 
+def test_catalogue_match_does_not_verify_fabricated_raw_measurements():
+    """A matching catalogue row cannot establish provenance of a BLS result.
+
+    This deliberately records the v4 boundary: callers must describe a match
+    as catalogue consistency, never independent FITS reproduction.
+    """
+    document = _base()
+    document["target"]["id"] = "TIC-259377017"
+    document["scientific_status"] = "known_object"
+    document["archive"]["observation_ids"] = ["unrelated-observation"]
+    document["archive"]["raw_source_sha256"] = "0" * 64
+    document["metrics"][0]["value"] = 5.66051
+    document["metrics"][1]["value"] = 0.003451844
+    row = {"tic_id": "TIC 259377017", "pl_orbper": 5.66051, "pl_trandep": 0.3451844}
+    assert verifier([row])(document) == "matched"
+
+
+def test_invalid_or_contradictory_catalogue_rows_cannot_match():
+    document = _base()
+    document["target"]["id"] = "TIC-259377017"
+    document["scientific_status"] = "known_object"
+    document["metrics"][0]["value"] = 5.66051
+    document["metrics"][1]["value"] = 0.003451844
+    invalid_rows = [
+        {"tic_id": "TIC 259377017", "pl_orbper": "not a number", "pl_trandep": 0.3451844},
+        {"tic_id": "TIC 259377017", "pl_orbper": 3.35992, "pl_trandep": 0.09766941},
+        {"tic_id": "TIC 000000000", "pl_orbper": 5.66051, "pl_trandep": 0.3451844},
+    ]
+    assert "does not match" in verifier(invalid_rows)(document)
+
+
 def test_unpublished_candidate_never_passes_external_comparison():
     document = _base()
     document["target"]["id"] = "TIC-259377017"

@@ -16,7 +16,7 @@ Use the text below for a **Projects → Project** submission. It describes the d
 
 ## 03 · Description — paste into the 1,000-character field
 
-> DeepSight is an astronomy research workspace for people who want to investigate a possible transit without treating a plotted dip as a discovered planet. Start with a real TESS light curve from NASA MAST, run a box-least-squares search, and inspect the measurements, quality flags, source files, and reproducible evidence manifest. When ready, connect a wallet and register the claim on GenLayer StudioNet. DeepSight's Intelligent Contract binds the claimant, target, manifest hash, and evidence pointers; a separate on-chain review records a bounded archive comparison and a reasoned outcome. Other wallets can challenge a claim, while its owner can replace or retract it. The app shows transaction links and separates local analysis, contract evidence review, and scientific confirmation. Raw data stays in content-addressed storage; its hashes are committed in the manifest. A live end-to-end claim has finalized registration, review, challenge, replacement, and retraction transactions.
+> DeepSight is an astronomy research workspace for investigating possible transits without treating a plotted dip as a discovered planet. Import a real TESS light curve from NASA MAST, run a box-least-squares search, and inspect measurements, quality flags, source files, and an evidence manifest. Connect a wallet to register the claim on GenLayer StudioNet. Its Intelligent Contract binds claimant, target, manifest hash, and evidence pointers; a separate review checks manifest integrity and, for eligible known TESS objects, catalogue consistency. It does not reproduce FITS measurements. Other wallets can record unadjudicated objections; the owner can replace or retract a claim. The app links transactions and distinguishes local analysis, contract checks, and scientific confirmation. Raw data stays in content-addressed storage, with hashes committed in the manifest. Live transactions have finalized for registration, review, challenge, replacement, and retraction.
 
 ## 04 · Demo video
 
@@ -47,6 +47,7 @@ If live import or wallet confirmation is unavailable during review, use the alre
 - **Website:** https://deepsight-evidence.netlify.app
 - **GitHub:** https://github.com/linoxbt/DeepSight
 - **Live claim:** https://deepsight-evidence.netlify.app/claims/clm_092f3f5afa85
+- **Live known-TIC catalogue-matching claim:** https://deepsight-evidence.netlify.app/claims/clm_868cfd805618
 - **Contract source:** https://github.com/linoxbt/DeepSight/blob/feat/evidence-workspace/contracts/proof_of_discovery.py
 - **Deployment record:** https://github.com/linoxbt/DeepSight/blob/feat/evidence-workspace/deployments/studionet-v4.json
 
@@ -62,6 +63,7 @@ The Portal requires at least one item. Add the GitHub repository first, then the
 6. **Replacement review:** https://explorer-studio.genlayer.com/tx/0x7803738809a14c406c41d4a7272d8c39006fcb5f27fb8185d010920890596c47
 7. **Owner retraction:** https://explorer-studio.genlayer.com/tx/0x6e19c7386f019c088a00d9fa89b6ddf75c2d58180ee417d5c80d37ab002c65c7
 8. **Technical verification and known limits:** https://github.com/linoxbt/DeepSight/blob/feat/evidence-workspace/AUDIT_STATUS.md
+9. **Finalized v4 known-TIC catalogue match:** https://explorer-studio.genlayer.com/tx/0xb9a90a77e9904e886b826cd45bdabbacf810adc572b3c5ccd14caf10612adf17
 
 ### What makes GenLayer central
 
@@ -69,4 +71,4 @@ The app's scientific work produces an evidence package, but the public claim lif
 
 ### Accuracy note for the steward
 
-This is a research-claim and evidence-review system, not an exoplanet confirmation service. The current contract can compare submitted measurements with a live NASA catalogue response when available; it does not recompute BLS from the pinned FITS file. Radio measurements are not independently verified on-chain. Some social-wallet and operational acceptance checks remain open. These limits are shown in the app and tracked in [`AUDIT_STATUS.md`](AUDIT_STATUS.md).
+This is a research-claim and evidence-review system, not an exoplanet confirmation service. The current contract can compare submitted measurements with a live NASA catalogue response when available; it does not recompute BLS from the pinned FITS file. A matching catalogue row can be copied into a fabricated manifest, so that match proves consistency only. A challenge is an unadjudicated objection and has no on-chain dismissal in v4. Radio measurements are not independently verified on-chain. Some social-wallet and operational acceptance checks remain open. These limits are shown in the app and tracked in [`AUDIT_STATUS.md`](AUDIT_STATUS.md) and [`STEWARD_REVIEW.md`](STEWARD_REVIEW.md).
