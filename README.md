@@ -124,6 +124,16 @@ The [registration](https://explorer-studio.genlayer.com/tx/0xe7faaea95f4c16a0745
 and [review](https://explorer-studio.genlayer.com/tx/0x3274ea3522b3ca8275381381972093ed6c82d6957369deb0c883b4619349f9f6)
 belong to hosted claim `clm_092f3f5afa85`.
 
+`GET /v1/release` exposes the running API's source revision, source fingerprint,
+configured contract address, and policy version without credentials. Compare its
+`source_sha256` with the digest of the sorted `source_checksums` from
+`api.evidence.environment()` in the exact source checkout. The deployment record
+in [`deployments/studionet-v4.json`](deployments/studionet-v4.json) separately
+records matching SHA-256 hashes for local contract source and deployed StudioNet
+code. The live known-TIC catalogue-matching review is linked in
+[`STEWARD_REVIEW.md`](STEWARD_REVIEW.md); matching a catalogue row does not
+reproduce measurements from the FITS file.
+
 On network read failures the worker retries reconciliation. If broadcasting
 fails before returning a hash, the operation is marked `unknown` and blocks
 further mutations: it is never blindly replayed. An operator must inspect the

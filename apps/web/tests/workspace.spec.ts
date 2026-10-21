@@ -28,10 +28,10 @@ test("workspace navigation, sign-in boundary, and queued analysis", async ({ pag
 
 test("claim page separates local policy and chain outcome and offers exact downloads", async ({ page }) => {
   await page.route("**/v1/auth/session", route => route.fulfill({ status: 401, json: { detail: "Sign in" } }));
-  await page.route("**/v1/claims/clm_browser", route => route.fulfill({ json: { id: "clm_browser", owner: "0x1111111111111111111111111111111111111111", status: "FINALIZED", protocol_result: "EVIDENCE_SUFFICIENT", rationale: "Local preview", scientific_status: "unconfirmed_candidate", scientific_confirmation: false, manifest_hash: "a".repeat(64), chain_status: "ACCEPTED", chain_note: "Provisional", chain_claim_id: "pod-1", chain_tx: "", chain_protocol_result: "", chain_execution: "SUCCESS", target_id: "TIC-1", policy_version: "celestial-v1", manifest: { archive: { name: "MAST" }, limitations: ["Not confirmed"], metrics: [] } } }));
+  await page.route("**/v1/claims/clm_browser", route => route.fulfill({ json: { id: "clm_browser", owner: "0x1111111111111111111111111111111111111111", status: "FINALIZED", protocol_result: "EVIDENCE_SUFFICIENT", rationale: "Local preview", scientific_status: "unconfirmed_candidate", scientific_confirmation: false, manifest_hash: "a".repeat(64), chain_status: "ACCEPTED", chain_note: "Provisional", chain_claim_id: "pod-1", chain_tx: "", chain_protocol_result: "", chain_execution: "SUCCESS", challenge_reason_hash: "b".repeat(64), challenge_reason: "The observation identifier points to a different star.", target_id: "TIC-1", policy_version: "celestial-v1", manifest: { archive: { name: "MAST" }, limitations: ["Not confirmed"], metrics: [] } } }));
   await page.route("**/v1/claims/clm_browser/timeline", route => route.fulfill({ json: { events: [] } }));
   await page.route("**/v1/claims/clm_browser/finality", route => route.fulfill({ json: { reason: "Awaiting finality" } }));
-  await page.route("**/v1/claims/clm_browser/operations", route => route.fulfill({ json: { operations: [{ id: "op_one", action: "submit", stage: "review", status: "submitted", tx_hash: `0x${"a".repeat(64)}`, error: "" }] } }));
+  await page.route("**/v1/claims/clm_browser/operations", route => route.fulfill({ json: { operations: [{ id: "op_one", action: "submit", stage: "review", status: "submitted", tx_hash: `0x${"a".repeat(64)}`, error: "" }, { id: "op_challenge", action: "challenge", stage: "challenge", status: "done", tx_hash: `0x${"b".repeat(64)}`, actor: "0x2222222222222222222222222222222222222222", error: "" }] } }));
   await page.route("**/v1/chain/config", route => route.fulfill({ json: { configured: true, relay_enabled: true, contract_address: "0x6B6dC06981Aa6903434dBab601D8b61c5fD57ff8" } }));
   await page.route("**/v1/research/attestations?claim_id=clm_browser", route => route.fulfill({ json: { attestations: [] } }));
   await page.goto("/claims/clm_browser");
@@ -41,6 +41,8 @@ test("claim page separates local policy and chain outcome and offers exact downl
   await expect(page.getByRole("link", { name: "Download reproducible evidence bundle" })).toHaveAttribute("href", "/v1/claims/clm_browser/bundle");
   await expect(page.getByRole("link", { name: "View Proof of Discovery on GenLayer StudioNet" })).toHaveAttribute("href", "https://explorer-studio.genlayer.com/address/0x6B6dC06981Aa6903434dBab601D8b61c5fD57ff8");
   await expect(page.getByRole("link", { name: `0x${"a".repeat(64)} ↗` })).toHaveAttribute("href", `https://explorer-studio.genlayer.com/tx/0x${"a".repeat(64)}`);
+  await expect(page.getByText("The observation identifier points to a different star.", { exact: false })).toBeVisible();
+  await expect(page.getByText("0x2222222222222222222222222222222222222222", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Sign retraction" })).toHaveCount(0);
 });
 

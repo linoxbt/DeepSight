@@ -80,6 +80,22 @@ def test_packaged_source_revision_is_verifiable_without_git(monkeypatch):
     assert revision.startswith("source-sha256:") and len(revision) == 78
 
 
+def test_public_release_identity_matches_running_source_without_secrets(monkeypatch):
+    monkeypatch.delenv("DEEPSIGHT_GIT_COMMIT", raising=False)
+    monkeypatch.delenv("RAILWAY_GIT_COMMIT_SHA", raising=False)
+    monkeypatch.setattr("api.main.subprocess.check_output", lambda *args, **kwargs: (_ for _ in ()).throw(FileNotFoundError()))
+    monkeypatch.setattr("api.main.chain.load_config", lambda: {"address": "0x5cfaE959BbFF6Be9e4A1F477abDCc61fAfD5eeb1"})
+    with TestClient(app) as client:
+        response = client.get("/v1/release")
+    assert response.status_code == 200
+    identity = response.json()
+    expected = hashlib.sha256(json.dumps(evidence.environment()["source_checksums"], sort_keys=True).encode()).hexdigest()
+    assert identity["source_sha256"] == expected
+    assert identity["source_revision"] == f"source-sha256:{expected}"
+    assert identity["contract_address"] == "0x5cfaE959BbFF6Be9e4A1F477abDCc61fAfD5eeb1"
+    assert "password" not in identity
+
+
 def test_finalized_claim_does_not_offer_invalid_appeal(monkeypatch):
     monkeypatch.setenv("DEEPSIGHT_RELAY_ENABLED", "1")
     monkeypatch.setattr("api.chain.load_config", lambda: {"address": "0x" + "3" * 40})

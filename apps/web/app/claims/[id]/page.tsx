@@ -28,6 +28,8 @@ type Claim = {
   chain_claim_id: string;
   chain_contract_address: string;
   chain_tx: string;
+  challenge_reason_hash: string;
+  challenge_reason: string;
   target_id: string;
   policy_version: string;
   manifest?: {
@@ -50,7 +52,7 @@ export default function ClaimDetailPage() {
   const [busy, setBusy] = useState("");
   const [reason, setReason] = useState("");
   const [viewer, setViewer] = useState("");
-  const [operations, setOperations] = useState<{ id: string; action: string; stage: string; status: string; error: string; tx_hash: string }[]>([]);
+  const [operations, setOperations] = useState<{ id: string; action: string; stage: string; status: string; error: string; tx_hash: string; actor?: string }[]>([]);
   const [attestations, setAttestations] = useState<Attestation[]>([]);
   const [chainConfig, setChainConfig] = useState<ChainConfig | null>(null);
   const refreshSeq = useRef(0);
@@ -162,13 +164,14 @@ export default function ClaimDetailPage() {
             <p className="fine muted">{finality}</p>
             <p className="fine muted">Chain status {claim.chain_status}. {claim.chain_claim_id || "No chain claim id."}</p>
             <p className="fine muted">Human review: {claim.review_resolution?.replaceAll("_", " ") || "pending"}.</p>
+            {claim.challenge_reason_hash ? <p className="fine">Unadjudicated challenge: {claim.challenge_reason || "Reason text unavailable"}<br />Reason SHA-256: <span className="hash mono">{claim.challenge_reason_hash}</span>{operations.find(op => op.action === "challenge")?.actor ? <> · Challenger: <span className="mono">{operations.find(op => op.action === "challenge")?.actor}</span></> : null}</p> : null}
             {claim.chain_tx ? <p className="hash mono">{claim.chain_tx}</p> : null}
           </section>
           {viewer && (claim.status === "FINALIZED" || claim.status === "NEEDS_REVIEW") ? (
             <section className="panel">
               <h2>Challenge</h2>
               <p className="fine muted">
-                A challenge records a reason hash and moves the record to CHALLENGED. If a chain claim exists, the same hash is sent to challenge_claim. This is a public, unadjudicated objection: it does not reverse the evidence review or confirm or reject a planet. This contract version has no dismissal method.
+                A challenge records a reason hash and moves the record to CHALLENGED. Include a public evidence link in the reason if you have one; its text is bound by the on-chain hash. If a chain claim exists, the hash is sent to challenge_claim. This is a public, unadjudicated objection: it does not reverse the evidence review or confirm or reject a planet. This contract version has no dismissal method.
               </p>
               <form
                 className="actions"

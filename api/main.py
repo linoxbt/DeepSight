@@ -255,6 +255,7 @@ def _claim_out(row: ClaimRow) -> dict[str, Any]:
         "supersedes": row.supersedes,
         "superseded_by": row.superseded_by,
         "challenge_reason_hash": row.challenge_reason_hash or "",
+        "challenge_reason": row.challenge_reason or "",
         "chain_claim_id": row.chain_claim_id or "",
         "chain_contract_address": (config_for_claim(row) or {}).get("address", ""),
         "chain_status": row.chain_status or "not_submitted",
@@ -324,6 +325,17 @@ def readiness(response: Response) -> dict[str, Any]:
     if not ready:
         response.status_code = 503
     return {"status": "ok" if ready else "degraded", "checks": checks}
+
+
+@app.get("/v1/release")
+def release_identity() -> dict[str, Any]:
+    """Public, secret-free identity for comparing a running API with source."""
+    checksums = evidence.environment()["source_checksums"]
+    digest = hashlib.sha256(json.dumps(checksums, sort_keys=True).encode()).hexdigest()
+    configured_contract = chain.load_config()
+    return {"source_revision": _git_commit(), "source_sha256": digest,
+            "contract_address": configured_contract["address"] if configured_contract else None,
+            "policy_version": POLICY_CELESTIAL}
 
 
 @app.get("/v1/sources")
