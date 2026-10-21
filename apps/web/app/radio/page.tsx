@@ -1,7 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { api, runJob } from "@/lib/api";
 import { Shell } from "@/components/Shell";
+import { Plot } from "@/components/Plot";
 
 type Observation = {
   utc: string;
@@ -34,9 +36,15 @@ export default function RadioPage() {
   const [catalogNote, setCatalogNote] = useState("");
   const [analysis, setAnalysis] = useState<Analysis | null>(null);
   const [acknowledged, setAcknowledged] = useState(false);
+  const [submissionMode, setSubmissionMode] = useState<"wallet" | "relay">("wallet");
   const [claimId, setClaimId] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState("");
+
+  useEffect(() => {
+    const saved = new URLSearchParams(window.location.search).get("analysis");
+    if (saved) api(`/v1/radio/analyses/${encodeURIComponent(saved)}`).then(setAnalysis).catch(reason => setError(reason.message));
+  }, []);
 
   async function search(event: React.FormEvent) {
     event.preventDefault();
@@ -55,8 +63,8 @@ export default function RadioPage() {
       }
       setRows(body.observations);
       setCatalogNote(body.note);
-    } catch {
-      setError("The analysis API is not reachable.");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "The analysis API is not reachable.");
     } finally {
       setBusy("");
     }
@@ -67,15 +75,10 @@ export default function RadioPage() {
     setError("");
     setClaimId("");
     try {
-      const response = await fetch("/v1/radio/analyze", { method: "POST" });
-      const body = await response.json().catch(() => null);
-      if (!response.ok || !body) {
-        setError(body?.detail || "The analysis API is not reachable.");
-        return;
-      }
+      const body = await runJob("radio");
       setAnalysis(body);
-    } catch {
-      setError("The analysis API is not reachable.");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "The analysis API is not reachable.");
     } finally {
       setBusy("");
     }
@@ -89,7 +92,7 @@ export default function RadioPage() {
       const response = await fetch("/v1/radio/claims", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ analysis_id: analysis.id, acknowledged }),
+        body: JSON.stringify({ analysis_id: analysis.id, acknowledged, submission_mode: submissionMode }),
       });
       const body = await response.json().catch(() => null);
       if (!body) {
@@ -114,8 +117,6 @@ export default function RadioPage() {
       setBusy("");
     }
   }
-
-  const plot = analysis?.plot.relative_power ?? [];
 
   return (
     <Shell active="/radio">
@@ -172,14 +173,8 @@ export default function RadioPage() {
               <p>{analysis.note}</p>
               <p className="mono">Status {analysis.scientific_status}. Off-target {analysis.off_target_comparison}. MAD score {analysis.metrics.snr_proxy}. Hits {analysis.metrics.n_hits}.</p>
               <p className="fine muted">{analysis.frequency_range}. {analysis.time_range}.</p>
-              <svg viewBox="0 0 640 160" role="img" aria-label="Relative power of the screened spectrum">
-                <title>Screened spectrum</title>
-                {plot.map((value, index) => {
-                  const x = 20 + (index / Math.max(plot.length - 1, 1)) * 600;
-                  const y = 140 - Math.max(0, Math.min(1, (value + 1) / 2)) * 120;
-                  return <circle key={index} cx={x} cy={y} r="1.4" fill="#00A7A0" />;
-                })}
-              </svg>
+              <Plot x={analysis.plot.frequency_mhz} y={analysis.plot.relative_power}
+                xLabel="frequency (MHz)" yLabel="relative power" description="Screened Voyager calibration spectrum; a narrowband excess is not a technosignature." />
               <ul className="flags">
                 {analysis.hits.slice(0, 5).map((hit) => (
                   <li key={`${hit.frequency_mhz}-${hit.mad_score}`}>{hit.frequency_mhz} MHz, MAD score {hit.mad_score}</li>
@@ -189,6 +184,12 @@ export default function RadioPage() {
               <label className="check">
                 <input type="checkbox" checked={acknowledged} onChange={(event) => setAcknowledged(event.target.checked)} />
                 <span>I understand this screen checks a calibration product. It does not confirm a signal.</span>
+              </label>
+              <label className="fine">GenLayer submission
+                <select value={submissionMode} onChange={event => setSubmissionMode(event.target.value as "wallet" | "relay")}>
+                  <option value="wallet">My wallet sends transactions (default)</option>
+                  <option value="relay">DeepSight relay sends transactions</option>
+                </select>
               </label>
               <button className="primary" type="button" onClick={createClaim} disabled={!acknowledged || busy === "claim"}>
                 {busy === "claim" ? "Storing…" : "Store radio evidence claim"}

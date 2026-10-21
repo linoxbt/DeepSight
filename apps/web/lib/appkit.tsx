@@ -41,7 +41,7 @@ function build() {
         "--w3m-border-radius-master": "1px",
         "--w3m-font-family": "Inter, Segoe UI, sans-serif",
       },
-      features: { analytics: false, email: false, socials: [] },
+      features: { analytics: false, email: true, socials: ["google"] },
     });
     return { wagmiConfig: adapter.wagmiConfig, ready: true };
   } catch (error) {

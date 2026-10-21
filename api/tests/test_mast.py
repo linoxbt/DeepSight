@@ -47,9 +47,11 @@ def test_spoc_reader_drops_flagged_and_blank_cadences(tmp_path):
     assert abs(curve["flux"][0] - 1) < 1e-6
 
 
-def test_import_caches_a_mast_curve(monkeypatch):
+def test_import_caches_a_mast_curve(monkeypatch, tmp_path):
     calls = {"n": 0}
     tic_id = str(random.randint(800_000_000, 899_999_999))
+    raw_path = tmp_path / "sector_lc.fits"
+    fits.HDUList([fits.PrimaryHDU()]).writeto(raw_path)
 
     def fake(tic, cache_dir=None):
         calls["n"] += 1
@@ -73,6 +75,7 @@ def test_import_caches_a_mast_curve(monkeypatch):
             "exposure_seconds": 120,
             "product_filename": "sector_lc.fits",
             "data_uri": "mast:TESS/product/sector_lc.fits",
+            "raw_path": str(raw_path),
         }
 
     monkeypatch.setattr("api.main.fetch_tess_light_curve", fake)
@@ -82,6 +85,8 @@ def test_import_caches_a_mast_curve(monkeypatch):
     assert body["cached"] is False
     assert body["target"]["archive"] == "MAST"
     assert "time_days" not in body["target"]
+    assert len(body["target"]["raw_sha256"]) == 64
+    assert client.get(body["target"]["raw_uri"]).status_code == 200
 
     again = client.post("/v1/datasets/import", json={"tic": tic_id})
     assert again.status_code == 200

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { api, runJob, waitForJob } from "@/lib/api";
 import { Plot } from "@/components/Plot";
 import { Shell } from "@/components/Shell";
 
@@ -20,7 +21,8 @@ type Analysis = {
   target: Target;
   metrics: {
     period_days: number;
-    period_uncertainty_days: number;
+    period_uncertainty_days: number | null;
+    period_resolution_days: number;
     duration_days: number;
     depth: number;
     snr_proxy: number;
@@ -43,36 +45,37 @@ export default function LabPage() {
   const [analysis, setAnalysis] = useState<Analysis | null>(null);
   const [error, setError] = useState("");
   const [running, setRunning] = useState(false);
+  const [progress, setProgress] = useState("");
 
   useEffect(() => {
-    const requested = new URLSearchParams(window.location.search).get("target");
+    const query = new URLSearchParams(window.location.search);
+    const requested = query.get("target");
+    const saved = query.get("analysis");
+    if (saved) api(`/v1/analyses/${encodeURIComponent(saved)}`).then(setAnalysis).catch(reason => setError(reason.message));
     fetch("/v1/targets")
       .then((response) => response.json())
       .then((body) => {
+        if (!Array.isArray(body.targets)) throw new Error("The research service is unavailable.");
         setTargets(body.targets);
         if (requested && body.targets.some((item: Target) => item.id === requested)) {
           setSelected(requested);
         }
       })
-      .catch(() => setError("The analysis API is not reachable."));
+      .catch(() => setError("The research service is temporarily unavailable. You can still explore an image in the Explorer."));
   }, []);
 
   async function run() {
     setRunning(true);
+    setProgress("Starting analysis");
     setError("");
     setAnalysis(null);
     try {
-      const response = await fetch("/v1/analyses", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ target_id: selected }),
-      });
-      if (!response.ok) throw new Error(await response.text());
-      setAnalysis(await response.json());
-    } catch {
-      setError("The transit search failed.");
+      setAnalysis(await runJob("analysis", { target_id: selected }, setProgress));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "The transit search failed.");
     } finally {
       setRunning(false);
+      setProgress("");
     }
   }
 
@@ -83,17 +86,27 @@ export default function LabPage() {
       <header className="page-head">
         <div>
           <p className="kicker">Discovery Lab</p>
-          <h1>Transit search</h1>
+          <h1>Analyze a star&apos;s light</h1>
+          <p className="muted">Choose a light curve below, then look for a repeating dip in brightness.</p>
         </div>
         <button className="primary" type="button" onClick={run} disabled={running || targets.length === 0}>
-          {running ? "Running BLS…" : "Run BLS analysis"}
+          {running ? "Analyzing…" : "Analyze light curve"}
         </button>
       </header>
       {error ? <p className="callout fail">{error}</p> : null}
+      {running && progress ? <p role="status" className="callout">{progress}…</p> : null}
+      <button className="ghost" disabled={running} onClick={async () => {
+        const id = sessionStorage.getItem("deepsight-job");
+        if (!id) { setError("No unfinished job in this browser."); return; }
+        setRunning(true);
+        try { const result = await waitForJob(id); if (result.metrics && result.target) setAnalysis(result); else setError("Job completed. Open its target from Explorer."); }
+        catch (reason) { setError(reason instanceof Error ? reason.message : "Could not resume job"); }
+        finally { setRunning(false); }
+      }}>Resume unfinished job</button>
       <div className="grid-2">
         <div className="stack">
           <section className="panel">
-            <h2>Target</h2>
+            <h2>Choose a light curve</h2>
             <div className="target-list">
               {targets.map((item) => (
                 <button
@@ -106,15 +119,14 @@ export default function LabPage() {
                     setAnalysis(null);
                   }}
                 >
-                  <strong className="mono">{item.id}</strong>
-                  {item.name}
-                  <span className="muted"> · {item.synthetic ? "synthetic calibration" : `MAST sector ${item.sector ?? ""}`}</span>
+                  <strong>{item.name}</strong>
+                  <span className="muted">{item.synthetic ? "Practice example" : "TESS observation"}</span>
                 </button>
               ))}
             </div>
             {target ? (
               <p className="fine muted">
-                {target.summary} Coordinates {target.ra_deg}°, {target.dec_deg}° ICRS. Observation id {target.observation_id}.
+                {target.summary} <details><summary>Observation details</summary>Coordinates {target.ra_deg}°, {target.dec_deg}° ICRS. Observation ID {target.observation_id}. Target ID {target.id}.</details>
               </p>
             ) : null}
           </section>
@@ -126,7 +138,7 @@ export default function LabPage() {
                   x={analysis.series_plot.time_days}
                   y={analysis.series_plot.flux}
                   xLabel="time (days)"
-                  yLabel="flux"
+                  yLabel="relative flux"
                   description={
                     analysis.target.synthetic
                       ? `${analysis.target.id} relative flux over ${analysis.metrics.n_samples} samples. Synthetic calibration series.`
@@ -140,7 +152,7 @@ export default function LabPage() {
                   x={analysis.folded.phase}
                   y={analysis.folded.flux}
                   xLabel="phase"
-                  yLabel="median flux"
+                  yLabel="median relative flux"
                   shade={{
                     from: 0.5 - analysis.metrics.duration_days / analysis.metrics.period_days / 2,
                     to: 0.5 + analysis.metrics.duration_days / analysis.metrics.period_days / 2,
@@ -154,7 +166,7 @@ export default function LabPage() {
                   x={analysis.periodogram.period_days}
                   y={analysis.periodogram.power}
                   xLabel="period (days)"
-                  yLabel="box power"
+                  yLabel="box power (relative)"
                   description={`Box-least-squares power. Best period ${analysis.metrics.period_days} days.`}
                 />
               </section>
@@ -162,7 +174,7 @@ export default function LabPage() {
           ) : (
             <section className="panel empty">
               <h2>No run yet</h2>
-              <p className="muted">Choose a calibration target and run the search. Nothing is loaded from MAST.</p>
+              <p className="muted">Choose a light curve above, then select Analyze light curve.</p>
             </section>
           )}
         </div>
@@ -172,7 +184,8 @@ export default function LabPage() {
             {analysis ? (
               <div className="metrics">
                 <Metric label="Period" value={`${analysis.metrics.period_days} d`} />
-                <Metric label="Uncertainty" value={`± ${analysis.metrics.period_uncertainty_days} d`} />
+                <Metric label="Period uncertainty" value={analysis.metrics.period_uncertainty_days == null ? "Unavailable; review required" : `±${analysis.metrics.period_uncertainty_days} d (conditional white-noise bootstrap)`} />
+                <Metric label="Period grid resolution" value={`${analysis.metrics.period_resolution_days} d (not uncertainty)`} />
                 <Metric label="Depth" value={analysis.metrics.depth.toFixed(5)} />
                 <Metric label="Duration" value={`${analysis.metrics.duration_days} d`} />
                 <Metric label="SNR proxy" value={String(analysis.metrics.snr_proxy)} />

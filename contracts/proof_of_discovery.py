@@ -10,6 +10,7 @@ from genlayer import *
 from dataclasses import dataclass
 import hashlib
 import json
+from urllib.parse import quote
 
 
 ERROR_EXPECTED = "[EXPECTED]"
@@ -25,8 +26,8 @@ STATUS_CHALLENGED = "CHALLENGED"
 STATUS_SUPERSEDED = "SUPERSEDED"
 STATUS_RETRACTED = "RETRACTED"
 
-POLICY_CELESTIAL = "celestial-v1"
-POLICY_SIGNAL = "signal-v1"
+POLICY_CELESTIAL = "celestial-v4"
+POLICY_SIGNAL = "signal-v4"
 TYPE_CELESTIAL = "celestial_object_evidence"
 TYPE_SIGNAL = "radio_signal_integrity"
 
@@ -77,12 +78,17 @@ class Claim:
 
 
 class ProofOfDiscovery(gl.Contract):
+    evidence_origin: str
     claims: TreeMap[str, Claim]
     manifest_index: TreeMap[str, str]
     claim_order: DynArray[str]
     next_id: u256
 
-    def __init__(self):
+    def __init__(self, evidence_origin: str):
+        evidence_origin = evidence_origin.strip().rstrip("/")
+        if not evidence_origin.startswith("https://") or "/" in evidence_origin[8:] or len(evidence_origin) > 120:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} A fixed HTTPS evidence origin is required")
+        self.evidence_origin = evidence_origin
         self.next_id = u256(1)
 
     @gl.public.write
@@ -97,7 +103,9 @@ class ProofOfDiscovery(gl.Contract):
         manifest_hash = _require_sha256(manifest_hash, "manifest_hash")
         claim_type, policy_version = _require_policy_pair(claim_type, policy_version)
         source_ref = _require_text(source_ref, "source_ref", MAX_REF_CHARS)
+        self._require_source(source_ref)
         target_id = _require_text(target_id, "target_id", MAX_ID_CHARS)
+        self._verify_published(source_ref, manifest_hash, target_id, gl.message.sender_address)
         if manifest_hash in self.manifest_index:
             raise gl.vm.UserError(
                 f"{ERROR_EXPECTED} Manifest hash is already registered"
@@ -145,9 +153,22 @@ class ProofOfDiscovery(gl.Contract):
             raise gl.vm.UserError(
                 f"{ERROR_EXPECTED} Evidence summary hash does not match the registered manifest"
             )
+        published = self._fetch_manifest(claim.source_ref)
+        if hashlib.sha256(published.encode("utf-8")).hexdigest() != digest:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} Published manifest does not match the registered hash")
         result, rationale = _evaluate(
-            evidence_summary, claim.claim_type, claim.policy_version
+            published, claim.claim_type, claim.policy_version, claim.target_id
         )
+        if result == RESULT_REVIEW and claim.claim_type == TYPE_CELESTIAL:
+            # Each validator fetches the archive itself. A DeepSight-hosted
+            # snapshot cannot establish that the measured period/depth agree
+            # with an independent scientific source.
+            archive_result = _verify_archive_measurements(json.loads(published))
+            if archive_result == "matched" and rationale == "Independent archive comparison required for measured period and depth.":
+                result = RESULT_SUFFICIENT
+                rationale = "Period and transit depth agree with a live NASA Exoplanet Archive row for this TIC. This is not a scientific confirmation."
+            elif archive_result != "matched":
+                rationale = _join([rationale, archive_result])
         claim.evidence_summary_hash = digest
         claim.protocol_result = result
         claim.rationale = rationale
@@ -178,7 +199,9 @@ class ProofOfDiscovery(gl.Contract):
     ) -> str:
         new_manifest_hash = _require_sha256(new_manifest_hash, "new_manifest_hash")
         source_ref = _require_text(source_ref, "source_ref", MAX_REF_CHARS)
+        self._require_source(source_ref)
         claim = self._editable(claim_id, (STATUS_FINALIZED, STATUS_REVIEW, STATUS_CHALLENGED))
+        self._verify_published(source_ref, new_manifest_hash, claim.target_id, claim.claimant)
         if new_manifest_hash in self.manifest_index:
             raise gl.vm.UserError(
                 f"{ERROR_EXPECTED} Replacement manifest hash is already registered"
@@ -247,6 +270,37 @@ class ProofOfDiscovery(gl.Contract):
         if claim_id not in self.claims:
             raise gl.vm.UserError(f"{ERROR_EXPECTED} Claim '{claim_id}' does not exist")
         return self.claims[claim_id]
+
+    def _require_source(self, source_ref: str) -> None:
+        prefix = self.evidence_origin + "/v1/claims/clm_"
+        suffix = "/manifest"
+        if not source_ref.startswith(prefix) or not source_ref.endswith(suffix):
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} source_ref must be a manifest at the fixed evidence origin")
+        claim_suffix = source_ref[len(prefix):-len(suffix)]
+        if len(claim_suffix) != 12 or any(char not in "0123456789abcdef" for char in claim_suffix):
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} source_ref has an invalid claim id")
+
+    def _fetch_manifest(self, source_ref: str) -> str:
+        def fetch() -> str:
+            return gl.nondet.web.get(source_ref).body.decode("utf-8")
+
+        published = gl.eq_principle.strict_eq(fetch)
+        if not published or len(published) > MAX_SUMMARY_CHARS:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} Published manifest exceeds the size limit")
+        return published
+
+    def _verify_published(self, source_ref: str, digest: str, target_id: str, claimant: Address) -> None:
+        published = self._fetch_manifest(source_ref)
+        if hashlib.sha256(published.encode("utf-8")).hexdigest() != digest:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} Published manifest hash does not match")
+        try:
+            document = json.loads(published)
+        except json.JSONDecodeError:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} Published manifest is not JSON")
+        if not isinstance(document, dict) or str(document.get("claimant_address", "")).lower() != str(claimant).lower():
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} Published claimant does not match the sender")
+        if not isinstance(document.get("target"), dict) or document["target"].get("id") != target_id:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} Published target does not match the registered target")
 
     def _editable(self, claim_id: str, allowed: tuple[str, ...]) -> Claim:
         claim = self._get(claim_id)
@@ -320,7 +374,7 @@ def _require_policy_pair(claim_type: str, policy_version: str) -> tuple[str, str
     )
 
 
-def _evaluate(summary: str, claim_type: str, policy_version: str) -> tuple[str, str]:
+def _evaluate(summary: str, claim_type: str, policy_version: str, target_id: str = "") -> tuple[str, str]:
     try:
         document = json.loads(summary)
     except json.JSONDecodeError:
@@ -337,6 +391,10 @@ def _evaluate(summary: str, claim_type: str, policy_version: str) -> tuple[str, 
         blocking.append("policy_version does not match the registered claim")
     if document.get("schema_version") != "1.1":
         blocking.append("schema_version must be 1.1")
+    if not _valid_address(document.get("claimant_address")) or not _valid_address(document.get("researcher_address")):
+        blocking.append("claimant and researcher wallet addresses are required")
+    if target_id and (not isinstance(document.get("target"), dict) or document["target"].get("id") != target_id):
+        blocking.append("target.id does not match the registered target")
 
     status = str(document.get("scientific_status", "")).strip().lower()
     if status in CONFIRMATION_CLAIMS:
@@ -353,6 +411,10 @@ def _evaluate(summary: str, claim_type: str, policy_version: str) -> tuple[str, 
 
     if blocking:
         return RESULT_INSUFFICIENT, _join(blocking + reasons)
+    if claim_type == TYPE_SIGNAL:
+        reasons.append("Radio measurements and RFI controls have no independent archive comparison.")
+    else:
+        reasons.append("Independent archive comparison required for measured period and depth.")
     if reasons:
         return RESULT_REVIEW, _join(reasons)
     return (
@@ -361,12 +423,80 @@ def _evaluate(summary: str, claim_type: str, policy_version: str) -> tuple[str, 
     )
 
 
+def _metric_value(document: dict, name: str, unit: str):
+    metrics = document.get("metrics")
+    if not isinstance(metrics, list):
+        return None
+    for metric in metrics:
+        if isinstance(metric, dict) and metric.get("name") == name and metric.get("unit") == unit:
+            pair = _ratio(metric.get("value"))
+            if pair and pair[1] > 0:
+                return pair[0] / pair[1]
+    return None
+
+
+def _verify_archive_measurements(document: dict) -> str:
+    """Compare two measured quantities to live, independently served TAP rows.
+
+    This only applies to exact TIC identifiers and known objects. Novel
+    candidates remain in human review; agreement with a known planet is not
+    evidence that this run independently detected it.
+    """
+    if document.get("scientific_status") != "known_object":
+        return "Unpublished candidate measurements require independent human review."
+    target = document.get("target", {})
+    archive = document.get("archive", {})
+    tic = str(target.get("id", ""))[4:] if isinstance(target, dict) else ""
+    if not tic.isdigit() or len(tic) > 12 or archive.get("name") != "MAST":
+        return "Only MAST observations with an exact TIC identifier can be compared."
+    period = _metric_value(document, "period", "d")
+    depth = _metric_value(document, "depth", "relative_flux")
+    if period is None or depth is None:
+        return "Period and relative-flux depth are both required for archive comparison."
+    query = ("SELECT TOP 30 tic_id,pl_orbper,pl_trandep FROM pscomppars "
+             "WHERE tic_id = 'TIC " + tic + "'")
+    url = "https://exoplanetarchive.ipac.caltech.edu/TAP/sync?query=" + quote(query, safe="") + "&format=json"
+    try:
+        def fetch():
+            # Network failures happen inside each validator. Catch them here;
+            # an outer try cannot recover an exception in nondeterministic work.
+            try:
+                payload = json.loads(gl.nondet.web.get(url).body.decode("utf-8"))
+            except Exception:
+                return []
+            if not isinstance(payload, list):
+                return []
+            # Sort stable numeric fields so TAP row order cannot split consensus.
+            # GenLayer calldata cannot encode Python floats returned by TAP.
+            # Normalize nondeterministic data before strict_eq crosses that boundary.
+            return sorted([(str(row.get("tic_id", "")), str(row.get("pl_orbper", "")), str(row.get("pl_trandep", "")))
+                           for row in payload[:30] if isinstance(row, dict)], key=str)
+        rows = gl.eq_principle.strict_eq(fetch)
+    except Exception:
+        return "NASA archive comparison was unavailable; measurements remain under review."
+    if not rows:
+        return "NASA archive comparison was unavailable; measurements remain under review."
+    for identifier, archive_period, archive_depth_percent in rows:
+        if identifier != "TIC " + tic:
+            continue
+        try:
+            reference_period = float(archive_period)
+            reference_depth = float(archive_depth_percent) / 100.0
+        except (TypeError, ValueError):
+            continue
+        if reference_period <= 0 or reference_depth <= 0:
+            continue
+        if abs(period - reference_period) <= max(0.02, reference_period * 0.005) and abs(depth - reference_depth) <= max(0.0002, reference_depth * 0.15):
+            return "matched"
+    return "Period or transit depth does not match a published row for this TIC."
+
+
 def _review_celestial(document: dict, blocking: list[str], reasons: list[str]) -> None:
     target = document.get("target")
     if not isinstance(target, dict) or not str(target.get("id", "")).strip():
         blocking.append("target.id is required")
-    elif not _has_coordinate(target, "ra_deg") or not _has_coordinate(target, "dec_deg"):
-        blocking.append("target coordinates are required")
+    elif not _in_range(target.get("ra_deg"), 0, 360, True) or not _in_range(target.get("dec_deg"), -90, 90):
+        blocking.append("valid ICRS coordinates are required")
 
     archive = document.get("archive")
     observation_ids = []
@@ -388,6 +518,8 @@ def _review_celestial(document: dict, blocking: list[str], reasons: list[str]) -
     _require_analysis(document, reasons)
     if not _has_metric(document, "period"):
         blocking.append("a period metric with a unit is required")
+    elif not _positive_uncertainty(document, "period"):
+        reasons.append("period uncertainty with a stated method is required")
     if not (
         _has_metric(document, "depth")
         or _has_metric(document, "snr")
@@ -402,6 +534,9 @@ def _review_celestial(document: dict, blocking: list[str], reasons: list[str]) -
     names = tests if isinstance(tests, list) else []
     if "odd_even" not in names or "secondary_eclipse" not in names:
         reasons.append("odd-even and secondary-eclipse tests must both be documented")
+    flags = document.get("quality_flags")
+    if isinstance(flags, list) and any(isinstance(flag, dict) and flag.get("severity") in ("warning", "error") for flag in flags):
+        reasons.append("analysis quality warnings require independent human review")
 
 
 def _review_signal(document: dict, blocking: list[str], reasons: list[str]) -> None:
@@ -443,8 +578,8 @@ def _require_analysis(document: dict, reasons: list[str]) -> None:
     if isinstance(analysis, dict):
         commit = str(analysis.get("git_commit", "")).strip()
         digest = str(analysis.get("container_digest", "")).strip()
-    if commit == "" or digest == "":
-        reasons.append("git commit and container digest are required for reproducibility")
+    if commit == "" or not ((digest.startswith("sha256:") and _valid_digest(digest[7:])) or _valid_digest(analysis.get("environment_sha256", ""))):
+        reasons.append("git commit and environment checksum or container digest are required for reproducibility")
 
 
 def _require_cross_matches(document: dict, reasons: list[str]) -> None:
@@ -455,8 +590,8 @@ def _require_cross_matches(document: dict, reasons: list[str]) -> None:
     first = matches[0]
     if not isinstance(first, dict) or not str(first.get("catalogue", "")).strip():
         reasons.append("cross-match catalogue name is required")
-    elif not str(first.get("query_snapshot_sha256", "")).strip():
-        reasons.append("cross-match query snapshot hash is required")
+    elif not _valid_digest(first.get("query_snapshot_sha256", "")):
+        reasons.append("valid cross-match query snapshot hash is required")
 
 
 def _require_text_list(document: dict, key: str, label: str, reasons: list[str]) -> None:
@@ -483,7 +618,7 @@ def _has_metric(document: dict, name: str) -> bool:
             continue
         if not str(metric.get("unit", "")).strip():
             continue
-        if _is_number(metric.get("value")):
+        if _metric_valid(metric, name):
             return True
     return False
 
@@ -498,32 +633,74 @@ def _has_artifact(document: dict) -> bool:
     return False
 
 
+def _positive_uncertainty(document: dict, name: str) -> bool:
+    metrics = document.get("metrics")
+    if not isinstance(metrics, list):
+        return False
+    for metric in metrics:
+        if isinstance(metric, dict) and metric.get("name") == name:
+            pair = _ratio(metric.get("uncertainty"))
+            return bool(pair and pair[0] > 0 and str(metric.get("uncertainty_method", "")).strip())
+    return False
+
+
+def _ratio(value):
+    if isinstance(value, bool) or value is None:
+        return None
+    text = str(value).strip().lower()
+    if not text or len(text) > 100:
+        return None
+    exponent = 0
+    if "e" in text:
+        parts = text.split("e")
+        if len(parts) != 2:
+            return None
+        exponent_text = parts[1][1:] if parts[1].startswith(("+", "-")) else parts[1]
+        if not exponent_text or any(c not in "0123456789" for c in exponent_text) or len(exponent_text) > 3:
+            return None
+        exponent = int(parts[1])
+        if exponent < -100 or exponent > 100:
+            return None
+        text = parts[0]
+    sign = -1 if text.startswith("-") else 1
+    if text.startswith(("-", "+")):
+        text = text[1:]
+    parts = text.split(".")
+    if len(parts) > 2:
+        return None
+    digits = "".join(parts)
+    if not digits or any(c not in "0123456789" for c in digits):
+        return None
+    scale = len(parts[1]) if len(parts) == 2 else 0
+    numerator = sign * int(digits)
+    denominator = 10 ** scale
+    if exponent >= 0:
+        numerator *= 10 ** exponent
+    else:
+        denominator *= 10 ** (-exponent)
+    return numerator, denominator
+
+
 def _is_number(value) -> bool:
-    if isinstance(value, bool):
-        return False
-    if isinstance(value, int):
-        return True
-    if isinstance(value, str):
-        return _numeric_text(value.strip())
-    return type(value).__name__ == "float"
+    return _ratio(value) is not None
 
 
-def _numeric_text(value: str) -> bool:
-    if value == "" or value in ("+", "-", ".", "+.", "-."):
+def _in_range(value, low: int, high: int, exclusive_high: bool = False) -> bool:
+    pair = _ratio(value)
+    if pair is None:
         return False
-    seen_dot = False
-    seen_digit = False
-    for index, char in enumerate(value):
-        if char in "+-" and index == 0:
-            continue
-        if char == "." and not seen_dot:
-            seen_dot = True
-            continue
-        if char in "0123456789":
-            seen_digit = True
-            continue
-        return False
-    return seen_digit
+    numerator, denominator = pair
+    return numerator >= low * denominator and (numerator < high * denominator if exclusive_high else numerator <= high * denominator)
+
+
+def _valid_digest(value) -> bool:
+    text = str(value)
+    return len(text) == 64 and all(c in "0123456789abcdef" for c in text)
+
+
+def _valid_address(value) -> bool:
+    text = str(value).lower()
+    return len(text) == 42 and text.startswith("0x") and all(c in "0123456789abcdef" for c in text[2:])
 
 
 def _join(parts: list[str]) -> str:
@@ -531,3 +708,17 @@ def _join(parts: list[str]) -> str:
     if len(text) <= MAX_RATIONALE_CHARS:
         return text
     return text[: MAX_RATIONALE_CHARS - 3] + "..."
+
+
+def _metric_valid(metric: dict, name: str) -> bool:
+    pair = _ratio(metric.get("value"))
+    if pair is None:
+        return False
+    numerator, denominator = pair
+    if name == "period":
+        return numerator > 0 and metric.get("unit") == "d"
+    if name == "depth":
+        return 0 < numerator < denominator and metric.get("unit") == "relative_flux"
+    if name in ("snr", "snr_proxy"):
+        return numerator >= 0 and metric.get("unit") in ("1", "mad")
+    return bool(str(metric.get("unit", "")).strip())

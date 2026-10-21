@@ -5,15 +5,22 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "test:browser": "playwright test"
   },
   "dependencies": {
+    "@fontsource-variable/newsreader": "^5.3.0",
+    "@fontsource/inter": "^5.3.0",
+    "@fontsource/jetbrains-mono": "^5.3.0",
+    "@metamask/connect-evm": "^2.1.1",
     "@reown/appkit": "^1.8.24",
     "@reown/appkit-adapter-wagmi": "^1.8.24",
     "@tanstack/react-query": "^5.104.2",
+    "@walletconnect/ethereum-provider": "^2.26.0",
     "@x402/core": "^2.28.0",
     "@x402/evm": "^2.28.0",
     "@x402/svm": "^2.28.0",
+    "genlayer-js": "^1.1.8",
     "next": "^15.5.4",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
@@ -21,9 +28,13 @@
     "wagmi": "^3.7.7"
   },
   "devDependencies": {
+    "@playwright/test": "^1.56.1",
     "@types/node": "^22.15.0",
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",
     "typescript": "^5.9.2"
+  },
+  "overrides": {
+    "postcss": "^8.5.31"
   }
 }

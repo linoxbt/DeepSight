@@ -25,7 +25,12 @@ export function Archives({ view }: { view: "tap" | "gaia" | "horizons" }) {
     setBusy(label);
     setError("");
     try {
-      const response = await fetch(path, {
+      // Gaia TAP can take longer than the hosting proxy's idle timeout. Its
+      // public read-only endpoint can be queried directly with API CORS.
+      const url = label === "gaia" && process.env.NEXT_PUBLIC_DEEPSIGHT_API_ORIGIN
+        ? `${process.env.NEXT_PUBLIC_DEEPSIGHT_API_ORIGIN}${path}`
+        : path;
+      const response = await fetch(url, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),

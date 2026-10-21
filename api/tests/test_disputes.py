@@ -13,27 +13,52 @@ def test_review_argument_keeps_manifest_json_a_cli_string():
     assert not argument.startswith("{")
 
 
-def test_challenge_and_retract_stay_local_without_a_contract():
+def test_challenge_and_retract_stay_local_without_a_contract(monkeypatch):
+    from api.auth import current_user
     created = client.post("/v1/analyses", json={"target_id": "DS-SYN-001"})
     claim = client.post("/v1/claims", json={"analysis_id": created.json()["id"], "acknowledged": True})
     claim_id = claim.json()["id"]
     reviewed = client.post(f"/v1/claims/{claim_id}/review-request")
     assert reviewed.json()["status"] == "NEEDS_REVIEW"
+    assert client.post(f"/v1/claims/{claim_id}/publish", json={"acknowledged": True}).status_code == 200
 
-    noted = client.post(f"/v1/claims/{claim_id}/review-note", json={"note": "Provenance still needs a person."})
+    reviewer = "0x" + "2" * 40
+    second_reviewer = "0x" + "3" * 40
+    monkeypatch.setenv("DEEPSIGHT_REVIEWERS", f"{reviewer},{second_reviewer}")
+    app.dependency_overrides[current_user] = lambda: reviewer
+    noted = client.post(f"/v1/claims/{claim_id}/review-note", json={
+        "note": "Provenance still needs a person.", "decision": "requests_revision",
+        "conflict_disclosure": "none",
+    })
     assert noted.status_code == 200
+    attestations = client.get(f"/v1/research/attestations?claim_id={claim_id}").json()["attestations"]
+    assert len(attestations) == 1
+    assert attestations[0]["reviewer"] == reviewer
+    assert len(client.get("/v1/reviews").json()["claims"]) == 1
+    app.dependency_overrides[current_user] = lambda: second_reviewer
+    resolved = client.post(f"/v1/claims/{claim_id}/review-note", json={
+        "note": "A revised archive observation is needed.", "decision": "requests_revision",
+        "conflict_disclosure": "none",
+    })
+    assert resolved.status_code == 200
+    assert resolved.json()["review_resolution"] == "requests_revision"
+    assert client.get("/v1/reviews").json()["claims"] == []
+    app.dependency_overrides[current_user] = lambda: "0x" + "1" * 40
 
     challenged = client.post(
         f"/v1/claims/{claim_id}/challenge",
         json={"reason": "The calibration series is not an archive observation."},
     )
     assert challenged.status_code == 200
-    assert challenged.json()["status"] == "CHALLENGED"
+    assert challenged.json()["status"] == "NEEDS_REVIEW"
+    assert challenged.json()["challenge_reason_hash"]
+    assert client.post(
+        f"/v1/claims/{claim_id}/challenge",
+        json={"reason": "A second unsupported objection should not replace the first."},
+    ).status_code == 409
     assert challenged.json()["chain_status"] == "not_submitted"
     assert len(challenged.json()["challenge_reason_hash"]) == 64
-
-    blocked = client.post("/v1/claims/{}/submit".format(claim_id))
-    assert blocked.status_code == 503
+    assert challenged.json()["challenge_reason"] == "The calibration series is not an archive observation."
 
     retracted = client.post(f"/v1/claims/{claim_id}/retract")
     assert retracted.status_code == 200

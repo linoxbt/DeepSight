@@ -9,12 +9,12 @@ from __future__ import annotations
 import json
 from typing import Any
 
-RESULT_SUFFICIENT = "EVIDENCE_SUFFICIENT"
+RESULT_CATALOGUE = "CATALOGUE_CONSISTENT"
 RESULT_INSUFFICIENT = "EVIDENCE_INSUFFICIENT"
 RESULT_REVIEW = "NEEDS_HUMAN_REVIEW"
 
-POLICY_CELESTIAL = "celestial-v1"
-POLICY_SIGNAL = "signal-v1"
+POLICY_CELESTIAL = "celestial-v5"
+POLICY_SIGNAL = "signal-v5"
 TYPE_CELESTIAL = "celestial_object_evidence"
 TYPE_SIGNAL = "radio_signal_integrity"
 
@@ -38,7 +38,7 @@ CONFIRMATION_CLAIMS = {
 }
 
 
-def evaluate(summary: str, claim_type: str, policy_version: str) -> tuple[str, str]:
+def evaluate(summary: str, claim_type: str, policy_version: str, target_id: str = "") -> tuple[str, str]:
     try:
         document = json.loads(summary)
     except json.JSONDecodeError:
@@ -54,6 +54,10 @@ def evaluate(summary: str, claim_type: str, policy_version: str) -> tuple[str, s
         blocking.append("policy_version does not match the registered claim")
     if document.get("schema_version") != "1.1":
         blocking.append("schema_version must be 1.1")
+    if not _valid_address(document.get("claimant_address")) or not _valid_address(document.get("researcher_address")):
+        blocking.append("claimant and researcher wallet addresses are required")
+    if target_id and (not isinstance(document.get("target"), dict) or document["target"].get("id") != target_id):
+        blocking.append("target.id does not match the registered target")
 
     status = str(document.get("scientific_status", "")).strip().lower()
     if status in CONFIRMATION_CLAIMS:
@@ -72,20 +76,21 @@ def evaluate(summary: str, claim_type: str, policy_version: str) -> tuple[str, s
 
     if blocking:
         return RESULT_INSUFFICIENT, _join(blocking + reasons)
+    if claim_type == TYPE_SIGNAL:
+        reasons.append("Radio measurements and RFI controls have no independent archive comparison.")
+    else:
+        reasons.append("Independent archive comparison required for measured period and depth.")
     if reasons:
         return RESULT_REVIEW, _join(reasons)
-    return (
-        RESULT_SUFFICIENT,
-        "Required artifacts, provenance, and methodology fields are present. This is not a scientific confirmation.",
-    )
+    return RESULT_REVIEW, "Independent observational verification is required."
 
 
 def _review_celestial(document: dict[str, Any], blocking: list[str], reasons: list[str]) -> None:
     target = document.get("target")
     if not isinstance(target, dict) or not str(target.get("id", "")).strip():
         blocking.append("target.id is required")
-    elif not _is_number(target.get("ra_deg")) or not _is_number(target.get("dec_deg")):
-        blocking.append("target coordinates are required")
+    elif not _in_range(target.get("ra_deg"), 0, 360, True) or not _in_range(target.get("dec_deg"), -90, 90):
+        blocking.append("valid ICRS coordinates are required")
 
     archive = document.get("archive") if isinstance(document.get("archive"), dict) else {}
     archive_name = str(archive.get("name", "")).strip()
@@ -103,6 +108,8 @@ def _review_celestial(document: dict[str, Any], blocking: list[str], reasons: li
     _require_analysis(document, reasons)
     if not _has_metric(document, "period"):
         blocking.append("a period metric with a unit is required")
+    elif not _positive_uncertainty(document, "period"):
+        reasons.append("period uncertainty with a stated method is required")
     if not (_has_metric(document, "depth") or _has_metric(document, "snr") or _has_metric(document, "snr_proxy")):
         blocking.append("a depth or signal-to-noise metric is required")
     if not _has_artifact(document):
@@ -113,6 +120,9 @@ def _review_celestial(document: dict[str, Any], blocking: list[str], reasons: li
     names = tests if isinstance(tests, list) else []
     if "odd_even" not in names or "secondary_eclipse" not in names:
         reasons.append("odd-even and secondary-eclipse tests must both be documented")
+    flags = document.get("quality_flags")
+    if isinstance(flags, list) and any(isinstance(flag, dict) and flag.get("severity") in ("warning", "error") for flag in flags):
+        reasons.append("analysis quality warnings require independent human review")
 
 
 def _review_signal(document: dict[str, Any], blocking: list[str], reasons: list[str]) -> None:
@@ -145,8 +155,8 @@ def _review_signal(document: dict[str, Any], blocking: list[str], reasons: list[
 
 def _require_analysis(document: dict[str, Any], reasons: list[str]) -> None:
     analysis = document.get("analysis") if isinstance(document.get("analysis"), dict) else {}
-    if not str(analysis.get("git_commit", "")).strip() or not str(analysis.get("container_digest", "")).strip():
-        reasons.append("git commit and container digest are required for reproducibility")
+    if not str(analysis.get("git_commit", "")).strip() or not ((str(analysis.get("container_digest", "")).startswith("sha256:") and _valid_digest(str(analysis.get("container_digest", ""))[7:])) or _valid_digest(analysis.get("environment_sha256", ""))):
+        reasons.append("git commit and environment checksum or container digest are required for reproducibility")
 
 
 def _require_cross_matches(document: dict[str, Any], reasons: list[str]) -> None:
@@ -157,8 +167,8 @@ def _require_cross_matches(document: dict[str, Any], reasons: list[str]) -> None
     first = matches[0]
     if not isinstance(first, dict) or not str(first.get("catalogue", "")).strip():
         reasons.append("cross-match catalogue name is required")
-    elif not str(first.get("query_snapshot_sha256", "")).strip():
-        reasons.append("cross-match query snapshot hash is required")
+    elif not _valid_digest(first.get("query_snapshot_sha256", "")):
+        reasons.append("valid cross-match query snapshot hash is required")
 
 
 def _require_limitations(document: dict[str, Any], reasons: list[str]) -> None:
@@ -177,7 +187,7 @@ def _has_metric(document: dict[str, Any], name: str) -> bool:
     for metric in metrics:
         if not isinstance(metric, dict) or str(metric.get("name", "")).strip() != name:
             continue
-        if str(metric.get("unit", "")).strip() and _is_number(metric.get("value")):
+        if _metric_valid(metric, name):
             return True
     return False
 
@@ -193,20 +203,87 @@ def _has_artifact(document: dict[str, Any]) -> bool:
     return False
 
 
-def _is_number(value: Any) -> bool:
-    if isinstance(value, bool) or value is None:
-        return False
-    if isinstance(value, (int, float)):
-        return True
-    if isinstance(value, str):
-        try:
-            float(value.strip())
-        except ValueError:
-            return False
-        return value.strip() != ""
+def _positive_uncertainty(document: dict[str, Any], name: str) -> bool:
+    for metric in document.get("metrics", []):
+        if isinstance(metric, dict) and metric.get("name") == name:
+            pair = _ratio(metric.get("uncertainty"))
+            return bool(pair and pair[0] > 0 and str(metric.get("uncertainty_method", "")).strip())
     return False
+
+
+def _ratio(value):
+    if isinstance(value, bool) or value is None:
+        return None
+    text = str(value).strip().lower()
+    if not text or len(text) > 100:
+        return None
+    exponent = 0
+    if "e" in text:
+        parts = text.split("e")
+        if len(parts) != 2:
+            return None
+        exponent_text = parts[1][1:] if parts[1].startswith(("+", "-")) else parts[1]
+        if not exponent_text or any(c not in "0123456789" for c in exponent_text) or len(exponent_text) > 3:
+            return None
+        exponent = int(parts[1])
+        if exponent < -100 or exponent > 100:
+            return None
+        text = parts[0]
+    sign = -1 if text.startswith("-") else 1
+    if text.startswith(("-", "+")):
+        text = text[1:]
+    parts = text.split(".")
+    if len(parts) > 2:
+        return None
+    digits = "".join(parts)
+    if not digits or any(c not in "0123456789" for c in digits):
+        return None
+    scale = len(parts[1]) if len(parts) == 2 else 0
+    numerator = sign * int(digits)
+    denominator = 10 ** scale
+    if exponent >= 0:
+        numerator *= 10 ** exponent
+    else:
+        denominator *= 10 ** (-exponent)
+    return numerator, denominator
+
+
+def _is_number(value) -> bool:
+    return _ratio(value) is not None
+
+
+def _in_range(value, low: int, high: int, exclusive_high: bool = False) -> bool:
+    pair = _ratio(value)
+    if pair is None:
+        return False
+    numerator, denominator = pair
+    return numerator >= low * denominator and (numerator < high * denominator if exclusive_high else numerator <= high * denominator)
+
+
+def _valid_digest(value) -> bool:
+    text = str(value)
+    return len(text) == 64 and all(c in "0123456789abcdef" for c in text)
+
+
+def _valid_address(value) -> bool:
+    text = str(value).lower()
+    return len(text) == 42 and text.startswith("0x") and all(c in "0123456789abcdef" for c in text[2:])
 
 
 def _join(parts: list[str]) -> str:
     text = "; ".join(parts)
     return text if len(text) <= 600 else text[:597] + "..."
+
+
+def _metric_valid(metric: dict, name: str) -> bool:
+    pair = _ratio(metric.get("value"))
+    if pair is None:
+        return False
+    numerator, denominator = pair
+    if name == "period":
+        return numerator > 0 and metric.get("unit") == "d"
+    if name == "depth":
+        return 0 < numerator < denominator and metric.get("unit") == "relative_flux"
+    if name in ("snr", "snr_proxy"):
+        return numerator >= 0 and metric.get("unit") in ("1", "mad")
+    return bool(str(metric.get("unit", "")).strip())

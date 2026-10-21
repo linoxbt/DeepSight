@@ -16,7 +16,6 @@ from api.db import DATA_DIR
 
 SUMMARY_PREFIX = "ds1:"
 CLIENT = Path(__file__).with_name("chain_client.mjs")
-NODE_PATH = "/usr/local/lib/node_modules/genlayer/node_modules"
 
 
 class ChainError(Exception):
@@ -40,11 +39,30 @@ def load_config() -> dict[str, str] | None:
     keystore = os.environ.get("DEEPSIGHT_KEYSTORE", "").strip()
     ignore_file = os.environ.get("DEEPSIGHT_IGNORE_CHAIN_FILE") == "1"
     path = DATA_DIR / "chain.json"
+    stored_address = ""
     if path.exists() and not ignore_file:
         stored = json.loads(path.read_text())
-        address = address or str(stored.get("address", "")).strip()
+        stored_address = str(stored.get("address", "")).strip()
         account = str(stored.get("account", account))
         keystore = keystore or str(stored.get("keystore", "")).strip()
+    deployment = Path(__file__).resolve().parent.parent / "deployments" / "studionet-v5.json"
+    if deployment.exists() and not ignore_file:
+        recorded = json.loads(deployment.read_text())
+        if (recorded.get("network") == "studionet" and recorded.get("finalized_execution") == "SUCCESS"
+                and recorded.get("code_matches_source") is True):
+            # The verified v5 deployment is authoritative for new claims even
+            # when an older Railway environment still holds the v4 address.
+            address = str(recorded.get("contract_address", "")).strip()
+    elif not address and not ignore_file:
+        for version in ("v4", "v3"):
+            older = deployment.with_name(f"studionet-{version}.json")
+            if not older.exists():
+                continue
+            recorded = json.loads(older.read_text())
+            if recorded.get("network") == "studionet" and recorded.get("finalized_execution") == "SUCCESS":
+                address = str(recorded.get("contract_address", "")).strip()
+                break
+    address = address or stored_address
     password_path = DATA_DIR / "genlayer.password"
     if not password and password_path.exists() and not ignore_file:
         password = password_path.read_text().strip()
@@ -55,93 +73,9 @@ def load_config() -> dict[str, str] | None:
     return {"address": address, "account": account, "password": password, "keystore": keystore}
 
 
-def submit_manifest(
-    *,
-    manifest_text: str,
-    manifest_hash: str,
-    claim_type: str,
-    policy_version: str,
-    source_ref: str,
-    target_id: str,
-) -> dict[str, Any]:
-    if len(manifest_text) > 8000:
-        raise ChainError("The manifest is longer than the contract summary limit of 8000 characters.", 422)
-    config = _require()
-    registered = invoke(
-        {
-            "action": "write",
-            "method": "register_claim",
-            "args": [manifest_hash, claim_type, policy_version, source_ref[:200], target_id[:80]],
-        },
-        config,
-    )
-    if not registered.get("ok"):
-        message = str(registered.get("error", "register_claim failed"))
-        if "already registered" not in message.lower():
-            raise ChainError(message)
-    found = invoke(
-        {"action": "read", "method": "read_claim_by_manifest", "args": [manifest_hash]},
-        config,
-    )
-    claim_id = _nested_claim_id(found.get("result"))
-    if not claim_id:
-        raise ChainError("The contract did not return a claim id for this manifest hash.")
-    reviewed = invoke(
-        {
-            "action": "write",
-            "method": "request_evidence_review",
-            "args": [claim_id, review_argument(manifest_text)],
-        },
-        config,
-    )
-    if not reviewed.get("ok"):
-        raise ChainError(str(reviewed.get("error", "request_evidence_review failed")))
-    chain_result = _return_value(reviewed.get("receipt"))
-    return {
-        "chain_claim_id": claim_id,
-        "chain_status": str(reviewed.get("status") or registered.get("status") or ""),
-        "execution": str(reviewed.get("execution") or ""),
-        "chain_tx": json.dumps(
-            {
-                "register": registered.get("hash", ""),
-                "review": reviewed.get("hash", ""),
-            }
-        ),
-        "protocol_result": chain_result,
-        "chain_note": _note(claim_id, reviewed, chain_result),
-    }
-
-
-def challenge(chain_claim_id: str, reason_hash: str) -> dict[str, Any]:
-    config = _require()
-    result = invoke(
-        {"action": "write", "method": "challenge_claim", "args": [chain_claim_id, reason_hash]},
-        config,
-    )
-    if not result.get("ok"):
-        raise ChainError(str(result.get("error", "challenge_claim failed")))
-    return result
-
-
-def retract(chain_claim_id: str) -> dict[str, Any]:
-    config = _require()
-    result = invoke({"action": "write", "method": "retract_claim", "args": [chain_claim_id]}, config)
-    if not result.get("ok"):
-        raise ChainError(str(result.get("error", "retract_claim failed")))
-    return result
-
-
-def appeal(tx_hash: str) -> dict[str, Any]:
-    config = _require()
-    result = invoke({"action": "appeal", "tx_hash": tx_hash}, config)
-    if not result.get("ok"):
-        raise ChainError(str(result.get("error", "appeal failed")))
-    return result
-
-
 def invoke(payload: dict[str, Any], config: dict[str, str] | None = None) -> dict[str, Any]:
     config = config or _require()
-    if not config.get("password"):
+    if payload.get("action") == "broadcast" and not config.get("password"):
         raise ChainError("The StudioNet account password is not available to this process.", 503)
     body = {
         **payload,
@@ -150,14 +84,13 @@ def invoke(payload: dict[str, Any], config: dict[str, str] | None = None) -> dic
         "password": config["password"],
     }
     environment = os.environ.copy()
-    environment["NODE_PATH"] = NODE_PATH
     try:
         completed = subprocess.run(
             ["node", str(CLIENT)],
             input=json.dumps(body),
             text=True,
             capture_output=True,
-            timeout=540,
+            timeout=90,
             check=False,
             env=environment,
         )
