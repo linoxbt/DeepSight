@@ -330,7 +330,7 @@ def build_radio_manifest(result: dict[str, Any], *, analysis_id: str, git_commit
         "claimant_address": claimant_address,
         "researcher_address": researcher_address,
         "claim_type": "radio_signal_integrity",
-        "policy_version": "signal-v4",
+        "policy_version": "signal-v5",
         "target": {"id": result["target_name"]},
         "archive": {"name": ARCHIVE_NAME, "observation_ids": [result["observation_id"]], "raw_source_uri": result["data_uri"], "raw_source_sha256": result["artifact_sha256"]},
         "signal": {

@@ -10,7 +10,7 @@ const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const origin = process.env.DEEPSIGHT_ORIGIN || "https://deepsight-evidence.netlify.app";
 const keystore = process.env.DEEPSIGHT_KEYSTORE || resolve(homedir(), ".genlayer/keystores/deepsight-studio.json");
 const passwordFile = process.env.DEEPSIGHT_PASSWORD_FILE || resolve(root, "data/genlayer.password");
-const recordPath = resolve(root, process.env.DEEPSIGHT_DEPLOYMENT_RECORD || "deployments/studionet-v4.json");
+const recordPath = resolve(root, process.env.DEEPSIGHT_DEPLOYMENT_RECORD || "deployments/studionet-v5.json");
 
 if (!origin.startsWith("https://") || /\/.+\//.test(origin.slice(8))) {
   throw new Error("DEEPSIGHT_ORIGIN must be a bare HTTPS origin");
@@ -18,7 +18,7 @@ if (!origin.startsWith("https://") || /\/.+\//.test(origin.slice(8))) {
 const wallet = await Wallet.fromEncryptedJson(readFileSync(keystore, "utf8"), readFileSync(passwordFile, "utf8").trim());
 const account = createAccount(wallet.privateKey);
 const client = createClient({ chain: studionet, account });
-const code = readFileSync(resolve(root, "contracts/proof_of_discovery.py"), "utf8");
+const code = readFileSync(resolve(root, "contracts/proof_of_discovery_v5.py"), "utf8");
 const previous = (() => { try { return JSON.parse(readFileSync(recordPath, "utf8")); } catch { return null; } })();
 if (previous?.tx_hash && !process.env.DEEPSIGHT_FORCE_REDEPLOY) {
   throw new Error(`Deployment transaction already recorded: ${previous.tx_hash}. Reconcile it before retrying.`);

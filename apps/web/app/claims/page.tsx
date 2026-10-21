@@ -35,7 +35,7 @@ export default function ClaimsPage() {
     } catch { setError("More claims could not be loaded. Try again."); }
     finally { setLoadingMore(false); }
   }
-  const visible = claims.filter(claim => `${claim.id} ${claim.target_id}`.toLowerCase().includes(query.toLowerCase()) && (filter === "all" || (filter === "review" ? claim.status === "NEEDS_REVIEW" : filter === "local" ? claim.protocol_result === "EVIDENCE_SUFFICIENT" : claim.chain_protocol_result === "EVIDENCE_SUFFICIENT" && claim.chain_status === "FINALIZED" && claim.chain_execution === "SUCCESS")));
+  const visible = claims.filter(claim => `${claim.id} ${claim.target_id}`.toLowerCase().includes(query.toLowerCase()) && (filter === "all" || (filter === "review" ? claim.status === "NEEDS_REVIEW" : filter === "local" ? claim.protocol_result === "EVIDENCE_SUFFICIENT" : ["EVIDENCE_SUFFICIENT", "CATALOGUE_CONSISTENT"].includes(claim.chain_protocol_result) && claim.chain_status === "FINALIZED" && claim.chain_execution === "SUCCESS")));
   return <Shell active="/claims">
     <header className="page-head"><div><p className="kicker">The evidence registry</p><h1>Claims, on the record.</h1></div><a className="primary" href="/lab">Start an investigation ↗</a></header>
     <p className="muted registry-intro">A record of the evidence, its review, and the questions that remain. Protocol outcomes do not establish scientific confirmation.</p>

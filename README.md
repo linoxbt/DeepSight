@@ -47,7 +47,7 @@ evidence under your own identity.
 - `api/main.py`: archive routes, research workflows, claim lifecycle, downloads.
 - `api/chain_ops.py`: claim-specific signed intents and durable chain outbox.
 - `api/chain_client.mjs`: pinned Node SDK bridge; broadcasts return immediately.
-- `api/policy.py`, `contracts/proof_of_discovery.py`: mirrored bounded evidence
+- `api/policy.py`, `contracts/proof_of_discovery_v5.py`: mirrored bounded evidence
   predicates, with parity fixtures. Hashes bind bytes; policy results alone do
   not independently establish that the source measurements are true.
 - `apps/web`: Next.js interface, session signing, queued runs, separate local and
@@ -163,7 +163,7 @@ and the [registration](https://explorer-studio.genlayer.com/tx/0xee82531b43197ce
 and [challenge](https://explorer-studio.genlayer.com/tx/0x62fa28e1af641ce11bcfc0f4c52cbd99a70d30d4593e6c50784e4bd0d8c89973)
 transactions are publicly inspectable. This is a development-network deployment;
 it verifies protocol execution, not the scientific measurements in a manifest.
-The current [`celestial-v4` contract](deployments/studionet-v4.json) is deployed
+The [`celestial-v4` contract](deployments/studionet-v4.json) is deployed
 at [0x5cfaE959BbFF6Be9e4A1F477abDCc61fAfD5eeb1](https://explorer-studio.genlayer.com/address/0x5cfaE959BbFF6Be9e4A1F477abDCc61fAfD5eeb1).
 Its deployment finalized, deployed code matched this repository, and its read
 method succeeded. Earlier contracts remain available for existing claims. V4
@@ -178,6 +178,15 @@ Deploy `ProofOfDiscovery` with the public HTTPS web origin as its constructor
 argument. Validators fetch each published manifest from that fixed origin and
 check its hash, target, and relay claimant before registration. The v4 review
 adds a live NASA period-and-depth comparison for known TIC objects.
+
+The v5 source in [`contracts/proof_of_discovery_v5.py`](contracts/proof_of_discovery_v5.py)
+narrows a successful automated verdict to `CATALOGUE_CONSISTENT`: it compares
+submitted values with NASA TAP but does not verify that they came from the
+referenced FITS observation. V5 records one unadjudicated objection without
+changing the underlying review status or result. Existing v4 claims stay on
+their original contract; v5 routing requires a finalized, source-matched
+`deployments/studionet-v5.json` record. No observational or radio signal
+measurement is independently verified by this contract.
 
 ## Deployment
 
@@ -227,7 +236,7 @@ the proxy's exact source network before using `X-Forwarded-For` for rate limits.
 cd apps/web && npm run build
 npm run test:browser  # uses local Google Chrome; set CHROME_PATH if needed
 # From repository root, when the GenVM linter is installed:
-genvm-lint check contracts/proof_of_discovery.py
+genvm-lint check contracts/proof_of_discovery_v5.py
 ```
 
 Tests cover signature replay and ownership, exact evidence retrieval, local/contract

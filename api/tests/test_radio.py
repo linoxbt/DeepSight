@@ -24,7 +24,7 @@ def test_screen_finds_a_narrow_spike_and_not_a_technosignature():
     assert result["scientific_status"] == "known_object"
     assert result["off_target_comparison"] == "unavailable"
     built = build_radio_manifest(result, analysis_id="rad_test", git_commit="abc", claimant_address="0x" + "1" * 40, researcher_address="0x" + "2" * 40)
-    outcome, rationale = evaluate(built["text"], "radio_signal_integrity", "signal-v4")
+    outcome, rationale = evaluate(built["text"], "radio_signal_integrity", "signal-v5")
     assert outcome == RESULT_REVIEW
     assert "off-target" in rationale
     assert "extraterrestrial" not in rationale.lower()

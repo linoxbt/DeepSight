@@ -816,13 +816,13 @@ def discoveries() -> dict[str, Any]:
     with SessionLocal() as session:
         rows = session.scalars(select(ClaimRow).where(
             ClaimRow.public.is_(True),
-            ClaimRow.chain_protocol_result == "EVIDENCE_SUFFICIENT",
+            ClaimRow.chain_protocol_result.in_(("EVIDENCE_SUFFICIENT", "CATALOGUE_CONSISTENT")),
             ClaimRow.status == "FINALIZED", ClaimRow.chain_claim_id != "",
             ClaimRow.chain_status == "FINALIZED", ClaimRow.chain_execution == "SUCCESS",
         ).order_by(ClaimRow.created_at.desc()).limit(100)).all()
         published = []
         for row in rows:
-            if (row.chain_protocol_result != "EVIDENCE_SUFFICIENT"
+            if (row.chain_protocol_result not in ("EVIDENCE_SUFFICIENT", "CATALOGUE_CONSISTENT")
                     or row.status != "FINALIZED"
                     or not row.chain_claim_id
                     or row.chain_status != "FINALIZED"
@@ -830,11 +830,11 @@ def discoveries() -> dict[str, Any]:
                 continue
             item = _claim_out(row)
             item["headline"] = (
-                f"Protocol evidence sufficient. Scientific status: {item['scientific_status']}."
+                f"Catalogue consistency or legacy v4 evidence result. Scientific status: {item['scientific_status']}."
             )
             published.append(item)
         return {
-            "note": "Only finalized on-chain evidence decisions appear here. They do not confirm a planet or signal.",
+            "note": "Only finalized on-chain catalogue checks or legacy v4 evidence decisions appear here. These do not verify the observation or confirm a planet or signal.",
             "discoveries": published,
         }
 
@@ -1039,12 +1039,16 @@ def challenge_claim(claim_id: str, body: ChallengeIn, user: str = Depends(curren
         require_chain_idle(session, claim_id)
         if claim.chain_claim_id:
             raise HTTPException(428, "Chain challenges require a signed claim-specific intent")
-        claim.status = "CHALLENGED"
+        v5 = json.loads(claim.manifest_json).get("policy_version") in ("celestial-v5", "signal-v5")
+        if claim.challenge_reason_hash:
+            raise HTTPException(409, "This claim already has an objection")
+        if not v5:
+            claim.status = "CHALLENGED"
         claim.challenge_reason = reason
         claim.challenge_reason_hash = reason_hash
         claim.chain_note = chain_note
         claim.updated_at = _now()
-        _add_event(session, claim.id, "CHALLENGED", f"{chain_note} Reason hash {reason_hash}.")
+        _add_event(session, claim.id, "OBJECTION" if v5 else "CHALLENGED", f"{chain_note} Reason hash {reason_hash}.")
         session.commit()
         session.refresh(claim)
         return _claim_out(claim)

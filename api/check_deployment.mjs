@@ -6,7 +6,7 @@ import { createClient } from "genlayer-js";
 import { studionet } from "genlayer-js/chains";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
-const recordPath = resolve(root, process.env.DEEPSIGHT_DEPLOYMENT_RECORD || "deployments/studionet-v4.json");
+const recordPath = resolve(root, process.env.DEEPSIGHT_DEPLOYMENT_RECORD || "deployments/studionet-v5.json");
 const record = JSON.parse(readFileSync(recordPath, "utf8"));
 const client = createClient({ chain: studionet });
 const tx = await client.getTransaction({ hash: record.tx_hash });
@@ -25,7 +25,8 @@ if (result.status === "FINALIZED" && result.contract_address) {
   const code = await client.getContractCode(result.contract_address);
   result.code_present = Boolean(code);
   if (result.code_present) {
-    const source = readFileSync(resolve(root, "contracts/proof_of_discovery.py"), "utf8");
+    const sourceFile = recordPath.endsWith("studionet-v4.json") ? "contracts/proof_of_discovery.py" : "contracts/proof_of_discovery_v5.py";
+    const source = readFileSync(resolve(root, sourceFile), "utf8");
     result.source_sha256 = createHash("sha256").update(source).digest("hex");
     result.deployed_code_sha256 = createHash("sha256").update(code).digest("hex");
     result.code_matches_source = code === source;

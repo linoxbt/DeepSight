@@ -24,6 +24,9 @@ OTHER = "0x" + "2" * 40
 
 def insert_claim(status="EVIDENCE_READY", owner=OWNER):
     document = _base()
+    # Existing outbox fixtures represent claims pinned to the deployed v4
+    # contract; new v5 behavior has its own version-specific tests.
+    document["policy_version"] = "celestial-v4"
     document["claimant_address"] = owner
     document["researcher_address"] = owner
     digest = evidence.put_json({"time_days": [0, 1], "flux": [1, 1]})
@@ -339,6 +342,7 @@ def test_wallet_transactions_are_verified_and_reviewed_without_relay(monkeypatch
     insert_claim()
     contract = "0x" + "3" * 40
     monkeypatch.setenv("DEEPSIGHT_RELAY_ENABLED", "0")
+    monkeypatch.setenv("DEEPSIGHT_V4_CONTRACT_ADDRESS", contract)
     monkeypatch.setattr("api.chain.load_config", lambda: {"address": contract})
     calls = []
     def invoke(command, config):
@@ -498,7 +502,7 @@ def test_uncertain_broadcast_is_not_automatically_repeated(monkeypatch):
 
 def test_misconfigured_operation_yields_outbox_to_other_claims(monkeypatch):
     operation_id = queue_signed_operation(monkeypatch)
-    monkeypatch.setattr("api.chain.load_config", lambda: {"address": "0x" + "5" * 40})
+    monkeypatch.setenv("DEEPSIGHT_V4_CONTRACT_ADDRESS", "0x" + "5" * 40)
     with SessionLocal() as db:
         old = db.get(ChainOperation, operation_id)
         db.add(ChainOperation(id="op_other", claim_id=old.claim_id, actor=old.actor,

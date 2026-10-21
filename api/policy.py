@@ -9,12 +9,12 @@ from __future__ import annotations
 import json
 from typing import Any
 
-RESULT_SUFFICIENT = "EVIDENCE_SUFFICIENT"
+RESULT_CATALOGUE = "CATALOGUE_CONSISTENT"
 RESULT_INSUFFICIENT = "EVIDENCE_INSUFFICIENT"
 RESULT_REVIEW = "NEEDS_HUMAN_REVIEW"
 
-POLICY_CELESTIAL = "celestial-v4"
-POLICY_SIGNAL = "signal-v4"
+POLICY_CELESTIAL = "celestial-v5"
+POLICY_SIGNAL = "signal-v5"
 TYPE_CELESTIAL = "celestial_object_evidence"
 TYPE_SIGNAL = "radio_signal_integrity"
 
@@ -82,10 +82,7 @@ def evaluate(summary: str, claim_type: str, policy_version: str, target_id: str 
         reasons.append("Independent archive comparison required for measured period and depth.")
     if reasons:
         return RESULT_REVIEW, _join(reasons)
-    return (
-        RESULT_SUFFICIENT,
-        "Required artifacts, provenance, and methodology fields are present. This is not a scientific confirmation.",
-    )
+    return RESULT_REVIEW, "Independent observational verification is required."
 
 
 def _review_celestial(document: dict[str, Any], blocking: list[str], reasons: list[str]) -> None:

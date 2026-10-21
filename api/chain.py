@@ -45,13 +45,23 @@ def load_config() -> dict[str, str] | None:
         stored_address = str(stored.get("address", "")).strip()
         account = str(stored.get("account", account))
         keystore = keystore or str(stored.get("keystore", "")).strip()
-    deployment = Path(__file__).resolve().parent.parent / "deployments" / "studionet-v4.json"
-    if not deployment.exists():
-        deployment = deployment.with_name("studionet-v3.json")
-    if not address and deployment.exists() and not ignore_file:
+    deployment = Path(__file__).resolve().parent.parent / "deployments" / "studionet-v5.json"
+    if deployment.exists() and not ignore_file:
         recorded = json.loads(deployment.read_text())
-        if recorded.get("network") == "studionet" and recorded.get("finalized_execution") == "SUCCESS":
+        if (recorded.get("network") == "studionet" and recorded.get("finalized_execution") == "SUCCESS"
+                and recorded.get("code_matches_source") is True):
+            # The verified v5 deployment is authoritative for new claims even
+            # when an older Railway environment still holds the v4 address.
             address = str(recorded.get("contract_address", "")).strip()
+    elif not address and not ignore_file:
+        for version in ("v4", "v3"):
+            older = deployment.with_name(f"studionet-{version}.json")
+            if not older.exists():
+                continue
+            recorded = json.loads(older.read_text())
+            if recorded.get("network") == "studionet" and recorded.get("finalized_execution") == "SUCCESS":
+                address = str(recorded.get("contract_address", "")).strip()
+                break
     address = address or stored_address
     password_path = DATA_DIR / "genlayer.password"
     if not password and password_path.exists() and not ignore_file:

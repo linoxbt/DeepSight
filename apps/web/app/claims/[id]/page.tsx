@@ -152,6 +152,7 @@ export default function ClaimDetailPage() {
             <p>Consensus: {claim.chain_status} · Execution: {claim.chain_execution || "Not submitted"}</p>
             <p className="fine muted">{claim.submission_mode === "wallet" ? "Your connected wallet sends and pays for each GenLayer transaction. Registration anchors the manifest hash; the separate review transaction runs contract policy. The manifest, evidence, and wallet address become public." : "Signing a relay submission publishes this claim, its evidence, and your wallet address. The DeepSight relay pays fees and is the on-chain claimant."}</p>
             <p className="fine muted">Contract review checks manifest integrity and, for eligible known TESS objects, catalogue consistency. It does not rerun the pinned FITS analysis. A challenge is an unadjudicated objection, not a reversal of the review.</p>
+            {claim.chain_protocol_result === "CATALOGUE_CONSISTENT" ? <p className="callout">Catalogue consistency checks submitted values only. The referenced observation and its measurements have not been independently verified.</p> : null}
             {claim.submission_mode === "wallet" ? <p className="fine muted">Need test GEN? Open <a href="https://studio.genlayer.com" target="_blank" rel="noopener noreferrer">GenLayer Studio ↗</a> and use the faucet in its account selector.</p> : null}
             {(claim.chain_contract_address || chainConfig?.contract_address) ? <p className="fine"><a href={studioContractUrl(claim.chain_contract_address || chainConfig!.contract_address!)} target="_blank" rel="noopener noreferrer">View Proof of Discovery on GenLayer StudioNet ↗</a></p> : null}
             {chainConfig && !chainConfig.configured ? <p className="callout">StudioNet submissions are temporarily unavailable. Existing chain records remain visible.</p> : null}
@@ -167,11 +168,11 @@ export default function ClaimDetailPage() {
             {claim.challenge_reason_hash ? <p className="fine">Unadjudicated challenge: {claim.challenge_reason || "Reason text unavailable"}<br />Reason SHA-256: <span className="hash mono">{claim.challenge_reason_hash}</span>{operations.find(op => op.action === "challenge")?.actor ? <> · Challenger: <span className="mono">{operations.find(op => op.action === "challenge")?.actor}</span></> : null}</p> : null}
             {claim.chain_tx ? <p className="hash mono">{claim.chain_tx}</p> : null}
           </section>
-          {viewer && (claim.status === "FINALIZED" || claim.status === "NEEDS_REVIEW") ? (
+          {viewer && !claim.challenge_reason_hash && (claim.status === "FINALIZED" || claim.status === "NEEDS_REVIEW") ? (
             <section className="panel">
               <h2>Challenge</h2>
               <p className="fine muted">
-                A challenge records a reason hash and moves the record to CHALLENGED. Include a public evidence link in the reason if you have one; its text is bound by the on-chain hash. If a chain claim exists, the hash is sent to challenge_claim. This is a public, unadjudicated objection: it does not reverse the evidence review or confirm or reject a planet. This contract version has no dismissal method.
+                {claim.policy_version.endsWith("-v5") ? "An objection records a reason hash but leaves the contract's assessment unchanged." : "A v4 challenge records a reason hash and moves the record to CHALLENGED."} Include a public evidence link in the reason if you have one; its text is bound by the on-chain hash. If a chain claim exists, the hash is sent to challenge_claim. This is a public, unadjudicated objection: it does not confirm or reject a planet.
               </p>
               <form
                 className="actions"

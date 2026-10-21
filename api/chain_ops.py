@@ -9,6 +9,7 @@ import logging
 import os
 import secrets
 import time
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -25,6 +26,7 @@ ACTIVE = ("queued", "broadcasting", "submitted", "reconciling", "unknown")
 LEGACY_CONTRACT = "0x6B6dC06981Aa6903434dBab601D8b61c5fD57ff8"
 V2_CONTRACT = "0x0E564b1d1767863FA3B73c6d07e3af73508CbB92"
 V3_CONTRACT = "0xadE6737f44b65b3Faeb7C0aCedd3b0fD23844a0a"
+V4_CONTRACT = "0x5cfaE959BbFF6Be9e4A1F477abDCc61fAfD5eeb1"
 
 
 def config_for_claim(claim):
@@ -38,6 +40,17 @@ def config_for_claim(claim):
         return {**cfg, "address": os.environ.get("DEEPSIGHT_V2_CONTRACT_ADDRESS", V2_CONTRACT)}
     if policy in ("celestial-v3", "signal-v3"):
         return {**cfg, "address": os.environ.get("DEEPSIGHT_V3_CONTRACT_ADDRESS", V3_CONTRACT)}
+    if policy in ("celestial-v4", "signal-v4"):
+        return {**cfg, "address": os.environ.get("DEEPSIGHT_V4_CONTRACT_ADDRESS", V4_CONTRACT)}
+    if policy in ("celestial-v5", "signal-v5"):
+        record = Path(__file__).resolve().parent.parent / "deployments" / "studionet-v5.json"
+        if not record.exists():
+            return None
+        deployed = json.loads(record.read_text())
+        if (deployed.get("finalized_execution") != "SUCCESS" or deployed.get("code_matches_source") is not True
+                or not deployed.get("contract_address")):
+            return None
+        return {**cfg, "address": str(deployed["contract_address"])}
     return cfg
 
 
@@ -90,6 +103,8 @@ def eligible(claim, action, actor):
         raise HTTPException(409, "Claim is already registered")
     if action != "submit" and not claim.chain_claim_id:
         raise HTTPException(409, "This claim has not been registered on chain")
+    if action == "challenge" and claim.challenge_reason_hash:
+        raise HTTPException(409, "This claim already has an objection")
 
 
 def idle(db, claim_id):
@@ -528,9 +543,11 @@ def _finish(db, op, claim, cfg, payload):
     state = result.get("result")
     if not result.get("ok") or not isinstance(state, dict):
         raise RuntimeError("Claim not readable yet")
+    policy = json.loads(claim.manifest_json).get("policy_version", "")
+    v5 = policy in ("celestial-v5", "signal-v5")
     expected = {
         "review": ("FINALIZED", "NEEDS_REVIEW"),
-        "challenge": ("CHALLENGED",),
+        "challenge": ("FINALIZED", "NEEDS_REVIEW") if v5 else ("CHALLENGED",),
         "retract": ("RETRACTED",),
         "supersede": ("SUPERSEDED",),
     }.get(op.stage)
@@ -538,6 +555,8 @@ def _finish(db, op, claim, cfg, payload):
         raise RuntimeError("Contract claim state has not caught up with the finalized transaction")
     if op.stage == "supersede" and not state.get("superseded_by"):
         raise RuntimeError("Contract replacement is not readable yet")
+    if op.stage == "challenge" and v5 and state.get("challenge_reason_hash") != sha256_text(payload["reason"].strip()):
+        raise RuntimeError("Finalized objection hash does not match the submitted reason")
     if op.stage == "supersede":
         replacement_view = chain.invoke({"action": "read", "method": "read_claim_by_manifest", "args": [payload["replacement_hash"]]}, cfg)
         replacement_state = replacement_view.get("result")

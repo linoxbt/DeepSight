@@ -50,13 +50,15 @@ def test_challenge_and_retract_stay_local_without_a_contract(monkeypatch):
         json={"reason": "The calibration series is not an archive observation."},
     )
     assert challenged.status_code == 200
-    assert challenged.json()["status"] == "CHALLENGED"
+    assert challenged.json()["status"] == "NEEDS_REVIEW"
+    assert challenged.json()["challenge_reason_hash"]
+    assert client.post(
+        f"/v1/claims/{claim_id}/challenge",
+        json={"reason": "A second unsupported objection should not replace the first."},
+    ).status_code == 409
     assert challenged.json()["chain_status"] == "not_submitted"
     assert len(challenged.json()["challenge_reason_hash"]) == 64
     assert challenged.json()["challenge_reason"] == "The calibration series is not an archive observation."
-
-    blocked = client.post("/v1/claims/{}/submit".format(claim_id))
-    assert blocked.status_code == 409  # A challenged claim is ineligible even without a relay.
 
     retracted = client.post(f"/v1/claims/{claim_id}/retract")
     assert retracted.status_code == 200

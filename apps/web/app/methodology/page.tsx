@@ -11,7 +11,7 @@ export default function MethodologyPage() {
       </header>
       <div className="stack">
         <section className="panel">
-          <h2>Celestial evidence, version celestial-v4</h2>
+          <h2>Celestial evidence, version celestial-v5</h2>
           <p>
             The policy looks for a target, coordinates, an observation id, a period, a depth or signal-to-noise metric,
             an artifact checksum, a catalogue snapshot, odd-even and secondary-eclipse notes, limitations, and a
@@ -30,10 +30,10 @@ export default function MethodologyPage() {
         </section>
         <section className="panel">
           <h2>Outcomes</h2>
-          <p>EVIDENCE_SUFFICIENT means the manifest met the written field checks and its submitted period and depth agreed with a live catalogue row. Fabricated values copied from that row could also pass; the result does not verify the underlying measurement or confirm a planet.</p>
+          <p>CATALOGUE_CONSISTENT means the submitted period and depth agreed with a live catalogue row. Fabricated values copied from that row could also pass; the result does not verify the underlying measurement or confirm a planet. Older v4 records use the broader EVIDENCE_SUFFICIENT label for this same limited check.</p>
           <p>EVIDENCE_INSUFFICIENT means a required field is missing, or the text claims a confirmed discovery.</p>
           <p>NEEDS_HUMAN_REVIEW means a person has to judge provenance or completeness before anyone treats the package as settled.</p>
-          <p>A challenge records an unadjudicated objection and a reason hash on chain. It does not overturn the review, prove misconduct, or receive an on-chain dismissal in this contract version. The owner can supersede or retract the claim.</p>
+          <p>A v5 challenge records one unadjudicated objection and a reason hash on chain without changing the finalized review status or result. Older v4 claims move to CHALLENGED, but retain their review result. Neither version treats an objection as proof of misconduct. The owner can supersede or retract the claim.</p>
         </section>
         <section className="panel">
           <h2>What this build does not do</h2>
@@ -44,12 +44,12 @@ export default function MethodologyPage() {
             is configured. There is no reward.
           </p>
           <p>
-            The intelligent contract in <span className="mono">contracts/proof_of_discovery.py</span> is the consensus
-            copy of the same rules. Until a contract address is configured, the API stores a local preview and says so
-            on the claim.
+            The v5 intelligent contract in <span className="mono">contracts/proof_of_discovery_v5.py</span> is the consensus
+            copy for new claims. Older v4 records stay on their original contract. Until a new contract address is
+            configured, the API stores a local preview and says so on the claim.
           </p>
           <p>
-            Signal integrity, version signal-v4, requires an observation, a frequency and time range, a noise method,
+            Signal integrity, version signal-v5, requires an observation, a frequency and time range, a noise method,
             calibration, an artifact hash, and at least one RFI test. Missing an off-target comparison stays in human
             review. Validators do not independently reproduce spectral measurements or RFI exclusion. The outcome is
             still not a technosignature.
