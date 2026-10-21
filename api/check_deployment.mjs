@@ -41,7 +41,7 @@ if (result.status === "FINALIZED" && result.contract_address) {
       record.contract_address = result.contract_address;
       // Verification time is not transaction finality time. Preserve the
       // original finality observation in the deployment record.
-      record.checked_at = new Date().toISOString();
+      record.checked_at ||= new Date().toISOString();
       record.finalized_execution = "SUCCESS";
       record.code_matches_source = true;
       record.source_sha256 = result.source_sha256;
